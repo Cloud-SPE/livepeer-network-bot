@@ -74,7 +74,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         // for a pre-existing delegator would be mislabeled "new delegator."
         // Done synchronously so the digest poster doesn't fire before the
         // seed completes.
-        if let Err(err) = crate::domains::subscriptions::seed::seed_all_subscribed(
+        if let Err(err) = crate::seed::seed_all_subscribed(
             explorer.clone(),
             streams.clone(),
             subscriptions.clone(),

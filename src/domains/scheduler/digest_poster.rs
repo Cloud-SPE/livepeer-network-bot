@@ -6,7 +6,7 @@ use tokio::time::{interval, MissedTickBehavior};
 use crate::domains::{
     explorer::{
         client::ExplorerClient,
-        types::{GatewayProfileRow, OrchestratorProfileRow},
+        types::{GatewayProfileRow, GatewayProfileRowExt, OrchestratorProfileRow},
     },
     notify::{
         embed::{build_digest, build_single_ticket, TicketView},
@@ -132,8 +132,7 @@ async fn run_once<N: Notifier>(
 
 fn parse_fee_cut(orch: &OrchestratorProfileRow) -> f64 {
     orch.fee_cut_percent
-        .as_deref()
-        .and_then(|s| s.parse::<f64>().ok())
+        .parse::<f64>()
         .map(|p| p / 100.0)
         .unwrap_or(0.0)
 }

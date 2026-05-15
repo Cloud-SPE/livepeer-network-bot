@@ -56,10 +56,7 @@ pub async fn subscribe(
         // Seed delegator_history for this orchestrator so the first Bond
         // event after subscription is correctly classified as new vs. stake
         // change. Failures here are logged but don't block the subscription.
-        if let Err(err) =
-            crate::domains::subscriptions::seed::seed_one(&data.explorer, &data.streams, &addr)
-                .await
-        {
+        if let Err(err) = crate::seed::seed_one(&data.explorer, &data.streams, &addr).await {
             tracing::warn!(?err, %addr, "subscribe: delegator_history seed failed");
         }
     }

@@ -17,13 +17,13 @@
 - [x] `ops/explorer-name-overrides.sql` — operator SQL template
 - [x] `.env.example` and `.github/workflows/ci.yml`
 
-## Open follow-ups (separate exec-plans)
+## Open follow-ups — closed-out as their own plans
 
-- [ ] Implement digest poster grouping + 24h-rollup query (`event_poller` and `summary_poster` are real; `digest_poster` is stubbed)
-- [ ] Wire `progenitor` codegen — see `002-progenitor-codegen.md`
-- [ ] Add `tests/architecture.rs` structural test enforcing cross-domain import rules
-- [ ] Add `tests/openapi_drift.rs` that fetches the live spec and compares to committed
-- [ ] Add gateway / orchestrator profile in-memory TTL cache
+- [x] **Digest poster grouping + 24h-rollup query** — shipped as part of 004a/004b
+- [x] **`progenitor` codegen** — shipped in [002](../completed/002-progenitor-codegen.md), consumers swapped in [007](../completed/007-types-swap-and-architecture-gate.md)
+- [x] **`tests/architecture.rs` structural cross-domain test** — shipped in [007](../completed/007-types-swap-and-architecture-gate.md)
+- [x] **`tests/openapi_drift.rs`** — superseded by the `openapi-drift` job in `.github/workflows/ci.yml` (CI step diffs the live spec against `docs/generated/openapi.json`)
+- [ ] **Gateway / orchestrator profile in-memory TTL cache** — not yet shipped. Each digest run fetches profiles fresh; with subscriber DM fan-out this can multiply request volume. Worth a future micro-plan if volumes grow.
 
 ## Verification
 

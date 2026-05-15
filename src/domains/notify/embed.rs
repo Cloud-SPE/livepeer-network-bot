@@ -7,8 +7,8 @@ use serde_json::{json, Value};
 
 use crate::domains::{
     explorer::types::{
-        Cadence, GatewayProfileRow, OrchestratorProfileRow, PayoutLeaderboardRow,
-        PayoutSummaryResponse,
+        Cadence, GatewayProfileRow, GatewayProfileRowExt, OrchestratorProfileRow,
+        PayoutLeaderboardRow, PayoutSummaryResponse,
     },
     state::repo::{OrchTotals, StoredEvent},
 };

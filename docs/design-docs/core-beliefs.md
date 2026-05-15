@@ -6,9 +6,20 @@ These are the rules. They are short, mechanical, and enforced — by lints, stru
 
 Every byte that crosses an external boundary (explorer API, env var, Discord response, SQLite row) is parsed into a typed struct before it touches business logic. `serde_json::Value` does not appear past `src/domains/explorer/client.rs`. Env vars are read once in `src/config.rs`; nothing else calls `std::env::var`.
 
-## 2. Domains do not know about each other
+## 2. Domains are stratified — strict leaves do not know about each other
 
-`src/domains/explorer/` knows nothing about Discord. `src/domains/notify/` knows nothing about SQLite. `src/domains/scheduler/` is the only place that holds references to multiple domains, and it composes them through trait-bounded generics — never concrete types. Cross-cutting concerns live in `src/providers/`.
+Code under `src/domains/` is grouped by responsibility:
+
+| Tier | Domains | What it can import |
+|---|---|---|
+| **Strict leaves** | `explorer`, `subscriptions` | Nothing else under `src/domains/` |
+| **Persistence** | `state` | Only `explorer::types` (data flow is API → DB) |
+| **Formatters** | `notify` | Types from any leaf |
+| **Composers** | `scheduler`, `commands` | Anything in `src/domains/` |
+
+The strict-leaf isolation is enforced mechanically by `tests/architecture.rs`. Persistence's narrow allowance (state may only import `explorer::types`) is enforced by the same test. Formatters and composers exist precisely to wire things together — they are not checked.
+
+Cross-domain orchestration that doesn't fit any single domain — for example, "for every subscribed orchestrator, fetch its delegators from the explorer and write them to state's history table" — lives at the crate root (`src/seed.rs`), NOT inside any domain directory. Cross-cutting concerns (HTTP client, Discord webhook, clock, DB pool) live in `src/providers/`.
 
 ## 3. One way to do anything
 
