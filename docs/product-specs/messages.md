@@ -158,7 +158,47 @@ Built with `serenity::all::CreateMessage` + `CreateEmbed`. Sent privately to eac
 
 The `(~${usd:.2})` parenthesized USD value is appended only when `amount_usd > 0` (the explorer returns valuations alongside the event when priced). If the orchestrator has no `display_name`, the raw address is shown in the bold link text.
 
-## 5. Slash command response embeds
+## 5. Subscriber digest DM (delegator activity)
+
+Built with `serenity::all::CreateMessage` + `CreateEmbed`. Sent privately every `SUBSCRIBER_DIGEST_INTERVAL_SECS` (default 900s) to each subscriber, scoped to one orchestrator. Source: `src/domains/notify/dm.rs::build_delegator_digest_dm`.
+
+| Field | Value |
+|---|---|
+| `title` | `"Delegator activity"` |
+| `color` | `#46a758` (green) |
+| `timestamp` | end of the digest window |
+| `thumbnail.url` | orchestrator `avatar_url` if present, omitted otherwise |
+| `description` | see below |
+
+### Description structure
+
+```
+[**{orch_name}**](https://tools.livepeer.cloud/orchestrator/{orch_addr}) had delegator activity:
+
+**New delegators (N)**
+• [`{short_addr}`](https://arbiscan.io/tx/{tx_hash}) bonded **{lpt:.4} LPT**
+…
+
+**Stake increases (N)**
+• [`{short_addr}`](https://arbiscan.io/tx/{tx_hash}) added **{lpt:.4} LPT**
+…
+
+**Unbonds (N)**
+• [`{short_addr}`](https://arbiscan.io/tx/{tx_hash}) unbonded **{lpt:.4} LPT**
+…
+
+**Rebonds (N)**
+• [`{short_addr}`](https://arbiscan.io/tx/{tx_hash}) rebonded **{lpt:.4} LPT**
+…
+```
+
+Sections are omitted entirely when empty. If all four buckets are empty for a (subscriber, orch) pair in this window, no DM is sent. The transaction link points at the specific Bond / Unbond / Rebond on Arbiscan. Address truncation matches the slash command convention (`0x123456…7890`).
+
+### New-vs-stake-change classification
+
+Bonds are split into "New delegators" (no prior `delegator_events` row for this `(delegator, orch)` pair) and "Stake increases" (one or more prior rows exist). The check is a `COUNT(*)` against the same table with `block_timestamp < this_event.block_timestamp`.
+
+## 6. Slash command response embeds
 
 Built with `serenity::all::CreateEmbed` (NOT `serde_json::Value`) because they are gateway responses, not webhook posts. All slash command replies are **ephemeral** (`CreateReply::default().ephemeral(true)`). See `src/domains/commands/`.
 

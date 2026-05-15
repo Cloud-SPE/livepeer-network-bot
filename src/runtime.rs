@@ -6,7 +6,10 @@ use crate::{
     config::Config,
     domains::{
         explorer::client::ExplorerClient,
-        scheduler::{delegator_poller, digest_poster, event_poller, reward_poller, summary_poster},
+        scheduler::{
+            delegator_poller, digest_poster, event_poller, reward_poller, subscriber_digest_poster,
+            summary_poster,
+        },
         state::{event_streams::EventStreamsRepo, repo::SqliteStateRepo},
         subscriptions::repo::SqliteSubscriptionsRepo,
     },
@@ -97,6 +100,25 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
 
         {
             let explorer = explorer.clone();
+            let streams = streams.clone();
+            let subscriptions = subscriptions.clone();
+            let dm = dm.clone();
+            let window = config.subscriber_digest_interval;
+            tasks.spawn(async move {
+                subscriber_digest_poster::run(
+                    explorer,
+                    streams,
+                    subscriptions,
+                    dm,
+                    failure_threshold,
+                    window,
+                )
+                .await;
+            });
+        }
+
+        {
+            let explorer = explorer.clone();
             let subscriptions = subscriptions.clone();
             tasks.spawn(async move {
                 if let Err(err) = discord_gateway::run(commands, explorer, subscriptions).await {
@@ -105,7 +127,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             });
         }
 
-        tracing::info!("slash commands + reward/delegator pollers enabled");
+        tracing::info!(
+            "subscriptions enabled (gateway + reward poller + delegator poller + subscriber digest)"
+        );
     } else {
         tracing::info!(
             "slash commands disabled (set COMMANDS_ENABLED=true to enable subscriptions)"

@@ -151,7 +151,6 @@ impl EventStreamsRepo {
         Ok(result.rows_affected() > 0)
     }
 
-    #[allow(dead_code)]
     pub async fn fetch_unsent_delegator_events(
         &self,
         limit: i64,
@@ -184,7 +183,6 @@ impl EventStreamsRepo {
             .collect())
     }
 
-    #[allow(dead_code)]
     pub async fn mark_delegator_events_sent(&self, ids: &[String]) -> anyhow::Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -198,6 +196,32 @@ impl EventStreamsRepo {
         }
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Count delegator_events for the same `(delegator, orch)` pair with
+    /// `block_timestamp` strictly before `before`. Used by the subscriber
+    /// digest to distinguish a "new delegator" Bond (count == 0) from a
+    /// subsequent "stake change" Bond.
+    pub async fn count_prior_delegator_events(
+        &self,
+        delegator: &str,
+        orch: &str,
+        before: DateTime<Utc>,
+    ) -> anyhow::Result<i64> {
+        let row = sqlx::query(
+            r#"
+            SELECT COUNT(*) FROM delegator_events
+            WHERE delegator_address = ?
+              AND orch_address = ?
+              AND block_timestamp < ?
+            "#,
+        )
+        .bind(delegator)
+        .bind(orch)
+        .bind(before)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get(0))
     }
 
     // ---- delegator_history -------------------------------------------------

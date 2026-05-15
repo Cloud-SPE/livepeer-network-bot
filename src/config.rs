@@ -12,6 +12,7 @@ pub struct Config {
     pub summary_poll_interval: Duration,
     pub reward_poll_interval: Duration,
     pub delegator_poll_interval: Duration,
+    pub subscriber_digest_interval: Duration,
     pub http_timeout: Duration,
     pub user_agent: String,
     pub commands: Option<CommandsConfig>,
@@ -55,6 +56,7 @@ impl Config {
         let summary_poll_interval = secs_var("SUMMARY_POLL_INTERVAL_SECS", 60 * 60)?;
         let reward_poll_interval = secs_var("REWARD_POLL_INTERVAL_SECS", 60)?;
         let delegator_poll_interval = secs_var("DELEGATOR_POLL_INTERVAL_SECS", 60)?;
+        let subscriber_digest_interval = secs_var("SUBSCRIBER_DIGEST_INTERVAL_SECS", 15 * 60)?;
         let http_timeout = secs_var("HTTP_TIMEOUT_SECS", 30)?;
 
         let user_agent =
@@ -75,6 +77,7 @@ impl Config {
             summary_poll_interval,
             reward_poll_interval,
             delegator_poll_interval,
+            subscriber_digest_interval,
             http_timeout,
             user_agent,
             commands,
