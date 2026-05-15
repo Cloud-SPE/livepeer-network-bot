@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --all
+
+  openapi-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fetch live spec
+        run: |
+          curl -fsSL https://livepeer-network-api.cloudspe.com/openapi.json \
+            -o /tmp/openapi.live.json
+
+      - name: compare to vendored spec
+        run: |
+          diff -u docs/generated/openapi.json /tmp/openapi.live.json \
+            || (echo "::error::OpenAPI spec drift; re-run scripts/sync-openapi.sh and commit" && exit 1)
