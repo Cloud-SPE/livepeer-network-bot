@@ -12,6 +12,19 @@ pub struct Config {
     pub summary_poll_interval: Duration,
     pub http_timeout: Duration,
     pub user_agent: String,
+    pub commands: Option<CommandsConfig>,
+}
+
+/// Configuration for the slash-command runtime. `None` means commands are
+/// disabled and the bot runs in webhook-only mode (the v0 deploy shape).
+#[derive(Debug, Clone)]
+pub struct CommandsConfig {
+    pub bot_token: String,
+    pub application_id: u64,
+    /// When `Some`, commands are registered per-guild (instant updates,
+    /// useful during development). When `None`, registration is global.
+    pub guild_id: Option<u64>,
+    pub max_subscriptions_per_user: u32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +54,12 @@ impl Config {
         let user_agent =
             std::env::var("USER_AGENT").unwrap_or_else(|_| "livepeer-payout-bot/0.1".into());
 
+        let commands = if bool_var("COMMANDS_ENABLED", false)? {
+            Some(CommandsConfig::from_env()?)
+        } else {
+            None
+        };
+
         Ok(Self {
             explorer_base_url,
             discord_webhook_url,
@@ -50,6 +69,24 @@ impl Config {
             summary_poll_interval,
             http_timeout,
             user_agent,
+            commands,
+        })
+    }
+}
+
+impl CommandsConfig {
+    fn from_env() -> Result<Self, ConfigError> {
+        let bot_token = std::env::var("DISCORD_BOT_TOKEN")
+            .map_err(|_| ConfigError::Missing("DISCORD_BOT_TOKEN"))?;
+        let application_id = u64_var("DISCORD_APPLICATION_ID")?;
+        let guild_id = optional_u64_var("DISCORD_GUILD_ID")?;
+        let max_subscriptions_per_user = u32_var("MAX_SUBSCRIPTIONS_PER_USER", 25)?;
+
+        Ok(Self {
+            bot_token,
+            application_id,
+            guild_id,
+            max_subscriptions_per_user,
         })
     }
 }
@@ -72,4 +109,55 @@ fn secs_var(name: &'static str, default: u64) -> Result<Duration, ConfigError> {
         source: anyhow::Error::new(e),
     })?;
     Ok(Duration::from_secs(n))
+}
+
+fn bool_var(name: &'static str, default: bool) -> Result<bool, ConfigError> {
+    let raw = match std::env::var(name) {
+        Ok(v) => v,
+        Err(_) => return Ok(default),
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" | "" => Ok(false),
+        other => Err(ConfigError::Invalid {
+            var: name,
+            source: anyhow::anyhow!("expected boolean, got `{other}`"),
+        }),
+    }
+}
+
+fn u64_var(name: &'static str) -> Result<u64, ConfigError> {
+    let raw = std::env::var(name).map_err(|_| ConfigError::Missing(name))?;
+    raw.parse()
+        .map_err(|e: std::num::ParseIntError| ConfigError::Invalid {
+            var: name,
+            source: anyhow::Error::new(e),
+        })
+}
+
+fn optional_u64_var(name: &'static str) -> Result<Option<u64>, ConfigError> {
+    let Ok(raw) = std::env::var(name) else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    raw.parse()
+        .map(Some)
+        .map_err(|e: std::num::ParseIntError| ConfigError::Invalid {
+            var: name,
+            source: anyhow::Error::new(e),
+        })
+}
+
+fn u32_var(name: &'static str, default: u32) -> Result<u32, ConfigError> {
+    let raw = match std::env::var(name) {
+        Ok(v) => v,
+        Err(_) => return Ok(default),
+    };
+    raw.parse()
+        .map_err(|e: std::num::ParseIntError| ConfigError::Invalid {
+            var: name,
+            source: anyhow::Error::new(e),
+        })
 }

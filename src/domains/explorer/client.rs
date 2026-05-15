@@ -3,11 +3,11 @@ use reqwest::Client;
 use url::Url;
 
 use super::types::{
-    Cadence, EventListResponse, GatewayProfileRow, OrchestratorProfileRow,
-    PayoutLeaderboardResponse, PayoutSummaryResponse,
+    Cadence, EventListResponse, GatewayProfileRow, OrchDelegatorsResponse, OrchestratorProfileRow,
+    PayoutLeaderboardResponse, PayoutSummaryResponse, RewardLeaderboardResponse,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ExplorerClient {
     client: Client,
     base_url: Url,
@@ -84,6 +84,35 @@ impl ExplorerClient {
             q.append_pair("sort", "commission_usd");
             q.append_pair("limit", &limit.to_string());
         }
+        let resp = self.client.get(url).send().await?.error_for_status()?;
+        Ok(resp.json().await?)
+    }
+
+    pub async fn rewards_leaderboard(
+        &self,
+        from: NaiveDate,
+        to: NaiveDate,
+        limit: u32,
+    ) -> anyhow::Result<RewardLeaderboardResponse> {
+        let mut url = self.url("api/v1/rewards/leaderboard")?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("from", &from.format("%Y-%m-%d").to_string());
+            q.append_pair("to", &to.format("%Y-%m-%d").to_string());
+            q.append_pair("limit", &limit.to_string());
+        }
+        let resp = self.client.get(url).send().await?.error_for_status()?;
+        Ok(resp.json().await?)
+    }
+
+    pub async fn orchestrator_delegators(
+        &self,
+        address: &str,
+        limit: u32,
+    ) -> anyhow::Result<OrchDelegatorsResponse> {
+        let mut url = self.url(&format!("api/v1/orchestrators/{address}/delegators"))?;
+        url.query_pairs_mut()
+            .append_pair("limit", &limit.to_string());
         let resp = self.client.get(url).send().await?.error_for_status()?;
         Ok(resp.json().await?)
     }

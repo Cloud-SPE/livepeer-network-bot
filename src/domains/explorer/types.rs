@@ -108,6 +108,17 @@ pub struct PayoutSummaryResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PayoutLeaderboardResponse {
     pub data: Vec<PayoutLeaderboardRow>,
+    pub meta: PayoutLeaderboardMeta,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PayoutLeaderboardMeta {
+    pub chain_id: String,
+    pub from: String,
+    pub to: String,
+    pub valuation_version: String,
+    pub job_type: String,
+    pub sort: String,
     pub next_cursor: Option<String>,
 }
 
@@ -125,6 +136,61 @@ pub struct PayoutLeaderboardRow {
     pub usd_rows_priced: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RewardLeaderboardResponse {
+    pub data: Vec<RewardLeaderboardRow>,
+    pub meta: RewardLeaderboardMeta,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RewardLeaderboardRow {
+    pub orchestrator_address: String,
+    pub reward_event_count: String,
+    pub sum_total_tokens: String,
+    pub sum_total_tokens_usd: String,
+    pub sum_orch_tokens: String,
+    pub sum_orch_tokens_usd: String,
+    pub sum_delegators_tokens: String,
+    pub sum_delegators_tokens_usd: String,
+    pub usd_rows_priced: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RewardLeaderboardMeta {
+    pub chain_id: String,
+    pub from: String,
+    pub to: String,
+    pub valuation_version: String,
+    pub sort: String,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrchDelegatorsResponse {
+    pub data: Vec<OrchDelegatorRow>,
+    pub meta: OrchDelegatorsMeta,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrchDelegatorRow {
+    pub delegator_address: String,
+    pub bonded_principal: String,
+    pub pending_stake: Option<String>,
+    pub pending_fees: Option<String>,
+    pub pending_round: Option<String>,
+    pub as_of_block: String,
+    pub as_of_timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OrchDelegatorsMeta {
+    pub chain_id: String,
+    pub orchestrator_address: String,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

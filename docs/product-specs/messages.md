@@ -136,6 +136,43 @@ Commission: {orch_total_commission_eth:.4} ETH ({orch_total_commission_percent:.
 | Broadcaster dashboard | `https://tools.livepeer.cloud/broadcaster/{addr}` |
 | Payout summary | `https://tools.livepeer.cloud/payout/{daily\|weekly\|monthly}/summary/{YYYY-MM-DD}` |
 
+## 4. Slash command response embeds
+
+Built with `serenity::all::CreateEmbed` (NOT `serde_json::Value`) because they are gateway responses, not webhook posts. All slash command replies are **ephemeral** (`CreateReply::default().ephemeral(true)`). See `src/domains/commands/`.
+
+### Color palette
+
+| Variant | RGB |
+|---|---|
+| Success / informational | `#46a758` (green) |
+| Error / not-found | `#d04a4a` (red) |
+| Neutral (e.g. "you weren't subscribed") | `#969696` (grey) |
+| `/orchestrator rewards` | `#ffa500` (orange — matches digest AI accent) |
+| `/orchestrator tickets` | `#ffd700` (gold — matches digest transcoding accent) |
+
+### Per-command shape
+
+- **`/subscribe <orchestrator>`** — Title: `Subscribed` or `Already subscribed` or `Error`. Description includes the orchestrator's `display_name`, truncated address, and `N of CAP` usage line. Sends `error_reply` for invalid address, cap reached, or orchestrator-not-found.
+- **`/unsubscribe <orchestrator>`** — Title: `Unsubscribed` or `Not subscribed` or `Error`. Description echoes the truncated address.
+- **`/subscriptions`** — Title: `Your subscriptions`. Description either lists each subscription as `• **{name}** — \`{short_addr}\`` or shows an empty-state line pointing at `/subscribe`. Lookups are best-effort: if the explorer lookup for a name fails, the address is shown instead so the list still renders.
+- **`/orchestrator delegators <orchestrator>`** — Title: `Delegators of {short_addr}`. Description lists top-10 delegators ranked by `bonded_principal`, each line as `**#{rank}** \`{short_addr}\` — {LPT:.2} LPT ({pct:.2}%)`. Footer line: `_Top N by stake; total shown: {LPT:.2} LPT_`.
+- **`/orchestrator rewards <orchestrator> <period>`** — Title: `Rewards · {short_addr}`. Description has the period label + date range, then `Reward events: N`, `Total distributed: X LPT ($Y)`, `Orchestrator cut: X LPT ($Y)`, `Delegators cut: X LPT`. Empty case: `No reward activity for {short_addr} in {period} ({from} – {to}).`
+- **`/orchestrator tickets <orchestrator> <period>`** — Title: `Tickets · {short_addr}`. Same shape as rewards but with ETH/USD on face value, commission, and delegators' share, plus distinct gateways count.
+
+### Address truncation
+
+All addresses in command responses use `short_addr()` → `0x1234…5678`. The first 6 chars and last 4 chars; an ellipsis between. Source: `src/domains/commands/mod.rs::short_addr`.
+
+### Period window semantics
+
+`daily | weekly | monthly` always refers to the **last complete UTC period**:
+
+- daily → yesterday (`today − 1` day)
+- weekly → previous Mon–Sun
+- monthly → previous month, 1st through last day
+
+Source: `src/domains/commands/orchestrator.rs::period_window`.
+
 ## Test expectations
 
 Each builder has a snapshot test in `tests/embeds.rs` that constructs a known input fixture and asserts the produced JSON matches a checked-in `tests/fixtures/{single_ticket,digest_ai,digest_tx,summary_daily}.json`. Any divergence from those fixtures fails CI — embed shape is part of the contract.
