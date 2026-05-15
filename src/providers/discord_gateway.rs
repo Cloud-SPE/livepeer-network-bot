@@ -17,6 +17,7 @@ use crate::{
     domains::{
         commands::{all_commands, BotData, CommandError},
         explorer::client::ExplorerClient,
+        state::event_streams::EventStreamsRepo,
         subscriptions::repo::SqliteSubscriptionsRepo,
     },
 };
@@ -25,6 +26,7 @@ pub async fn run(
     config: CommandsConfig,
     explorer: Arc<ExplorerClient>,
     subscriptions: Arc<SqliteSubscriptionsRepo>,
+    streams: Arc<EventStreamsRepo>,
 ) -> anyhow::Result<()> {
     let max_subs = config.max_subscriptions_per_user;
     let bot_token = config.bot_token.clone();
@@ -57,6 +59,7 @@ pub async fn run(
                 Ok(BotData {
                     explorer,
                     subscriptions,
+                    streams,
                     max_subscriptions_per_user: max_subs,
                 })
             })

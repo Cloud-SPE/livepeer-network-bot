@@ -7,7 +7,8 @@
 use std::sync::Arc;
 
 use crate::domains::{
-    explorer::client::ExplorerClient, subscriptions::repo::SqliteSubscriptionsRepo,
+    explorer::client::ExplorerClient, state::event_streams::EventStreamsRepo,
+    subscriptions::repo::SqliteSubscriptionsRepo,
 };
 
 pub mod orchestrator;
@@ -23,6 +24,7 @@ pub type CommandContext<'a> = poise::Context<'a, BotData, CommandError>;
 pub struct BotData {
     pub explorer: Arc<ExplorerClient>,
     pub subscriptions: Arc<SqliteSubscriptionsRepo>,
+    pub streams: Arc<EventStreamsRepo>,
     pub max_subscriptions_per_user: u32,
 }
 

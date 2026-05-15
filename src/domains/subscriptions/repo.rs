@@ -96,6 +96,16 @@ impl SqliteSubscriptionsRepo {
         Ok(row.get(0))
     }
 
+    /// Distinct orchestrators that have at least one subscriber. Used by the
+    /// cold-start delegator-history seeder to bound the work to "orchs the
+    /// bot actually cares about right now."
+    pub async fn distinct_subscribed_orchestrators(&self) -> anyhow::Result<Vec<String>> {
+        let rows = sqlx::query("SELECT DISTINCT orchestrator_address FROM subscriptions")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get::<String, _>(0)).collect())
+    }
+
     /// Returns every user subscribed to a given orchestrator. Used by the
     /// reward poller (004b) and the subscriber digest poster (004c) for
     /// fan-out.

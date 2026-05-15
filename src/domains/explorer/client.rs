@@ -120,11 +120,17 @@ impl ExplorerClient {
     pub async fn orchestrator_delegators(
         &self,
         address: &str,
+        cursor: Option<&str>,
         limit: u32,
     ) -> anyhow::Result<OrchDelegatorsResponse> {
         let mut url = self.url(&format!("api/v1/orchestrators/{address}/delegators"))?;
-        url.query_pairs_mut()
-            .append_pair("limit", &limit.to_string());
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("limit", &limit.to_string());
+            if let Some(c) = cursor {
+                q.append_pair("cursor", c);
+            }
+        }
         let resp = self.client.get(url).send().await?.error_for_status()?;
         Ok(resp.json().await?)
     }

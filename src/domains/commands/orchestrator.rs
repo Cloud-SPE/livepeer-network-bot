@@ -66,7 +66,7 @@ pub async fn delegators(
     let resp = ctx
         .data()
         .explorer
-        .orchestrator_delegators(&addr, 10)
+        .orchestrator_delegators(&addr, None, 10)
         .await?;
 
     let total: f64 = resp

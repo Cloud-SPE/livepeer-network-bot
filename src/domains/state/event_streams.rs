@@ -29,6 +29,7 @@ pub struct DelegatorEventRow {
     pub amount_usd: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct EventStreamsRepo {
     pool: SqlitePool,
 }

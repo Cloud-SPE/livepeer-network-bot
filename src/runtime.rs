@@ -69,6 +69,21 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         let reward_interval = config.reward_poll_interval;
         let delegator_interval = config.delegator_poll_interval;
 
+        // Seed delegator_history for every orch with an existing subscriber
+        // before the pollers start. Without this, the first Bond observed
+        // for a pre-existing delegator would be mislabeled "new delegator."
+        // Done synchronously so the digest poster doesn't fire before the
+        // seed completes.
+        if let Err(err) = crate::domains::subscriptions::seed::seed_all_subscribed(
+            explorer.clone(),
+            streams.clone(),
+            subscriptions.clone(),
+        )
+        .await
+        {
+            tracing::warn!(?err, "startup seed of delegator_history failed");
+        }
+
         {
             let explorer = explorer.clone();
             let streams = streams.clone();
@@ -120,8 +135,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         {
             let explorer = explorer.clone();
             let subscriptions = subscriptions.clone();
+            let streams = streams.clone();
             tasks.spawn(async move {
-                if let Err(err) = discord_gateway::run(commands, explorer, subscriptions).await {
+                if let Err(err) =
+                    discord_gateway::run(commands, explorer, subscriptions, streams).await
+                {
                     tracing::error!(?err, "discord gateway exited with error");
                 }
             });
