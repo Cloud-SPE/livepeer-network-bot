@@ -203,6 +203,49 @@ fn single_ticket_embed_omits_missing_valuation() {
     assert_eq!(actual, expected);
 }
 
+#[test]
+fn single_ticket_embed_omits_invalid_thumbnail_url() {
+    let event = stored_event_fixture(
+        "311470",
+        "0xtx0003",
+        "0xbcst0003",
+        "0xorch0003",
+        "0.0824",
+        "262.65",
+        "3185.81",
+    );
+    let gateway = gateway_fixture("0xbcst0003", "MyBroadcaster", "ai");
+    let view = TicketView { event, gateway };
+    let orch = orch_fixture(
+        "MyOrch",
+        "0xorch0003",
+        "30",
+        Some("eip155:1/erc721:0xabc/123"),
+    );
+    let totals = OrchTotals {
+        face_value_eth: 1.234,
+        face_value_usd: 567.89,
+        commission_eth: 0.3702,
+        commission_usd: 170.37,
+    };
+
+    let actual = build_single_ticket(&orch, &view, 0.30, &totals);
+
+    let expected = json!({
+        "username": "Payout Alert Bot",
+        "avatar_url": "https://cdn.discordapp.com/avatars/808142296959680532/338766470b721d9081680c7cb34921df.webp?size=80",
+        "embeds": [{
+            "color": 16766720,
+            "title": "Orchestrator Payout",
+            "description": "[**MyOrch**](https://tools.livepeer.cloud/orchestrator/0xorch0003) just earned **0.0824 ETH $262.65**\nperforming AI inference.\n\nPaid By [**MyBroadcaster**](https://tools.livepeer.cloud/broadcaster/0xbcst0003)\nETH Price **$3185.81**\nFee cut: **30.00%**\nCommission: **0.0247 ETH ($78.79)**\n\n24H Rolling Total\n**1.2340 ETH ($567.89)**\nKeeping 0.37020 ETH ($170.37)",
+            "timestamp": "2026-05-15T12:30:00+00:00",
+            "url": "https://arbiscan.io/tx/0xtx0003",
+        }]
+    });
+
+    assert_eq!(actual, expected);
+}
+
 // ----- build_digest (multi-ticket, AI grouped) -----------------------------
 
 #[test]

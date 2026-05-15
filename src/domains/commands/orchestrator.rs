@@ -75,35 +75,7 @@ pub async fn delegators(
         .map(|d| parse_f64_or_zero(&d.bonded_principal))
         .sum();
 
-    let description = if resp.data.is_empty() {
-        format!("No delegators found for `{}`.", short_addr(&addr))
-    } else {
-        let mut buf = String::new();
-        for (i, d) in resp.data.iter().enumerate() {
-            let bonded = parse_f64_or_zero(&d.bonded_principal) / 1e18;
-            let total_lpt = total / 1e18;
-            let pct = if total_lpt > 0.0 {
-                100.0 * bonded / total_lpt
-            } else {
-                0.0
-            };
-            let _ = writeln!(
-                buf,
-                "**#{}** `{}` — {:.2} LPT ({:.2}%)",
-                i + 1,
-                short_addr(&d.delegator_address),
-                bonded,
-                pct
-            );
-        }
-        let _ = write!(
-            buf,
-            "\n_Top {} by stake; total shown: {:.2} LPT_",
-            resp.data.len(),
-            total / 1e18
-        );
-        buf
-    };
+    let description = format_delegators_description(&addr, &resp.data, total);
 
     ctx.send(
         CreateReply::default().ephemeral(true).embed(
@@ -115,6 +87,41 @@ pub async fn delegators(
     )
     .await?;
     Ok(())
+}
+
+fn format_delegators_description(
+    orch_addr: &str,
+    delegators: &[crate::domains::explorer::types::OrchDelegatorRow],
+    total_lpt: f64,
+) -> String {
+    if delegators.is_empty() {
+        return format!("No delegators found for `{}`.", short_addr(orch_addr));
+    }
+
+    let mut buf = String::new();
+    for (i, d) in delegators.iter().enumerate() {
+        let bonded_lpt = parse_f64_or_zero(&d.bonded_principal);
+        let pct = if total_lpt > 0.0 {
+            100.0 * bonded_lpt / total_lpt
+        } else {
+            0.0
+        };
+        let _ = writeln!(
+            buf,
+            "**#{}** `{}` — {:.2} LPT ({:.2}%)",
+            i + 1,
+            short_addr(&d.delegator_address),
+            bonded_lpt,
+            pct
+        );
+    }
+    let _ = write!(
+        buf,
+        "\n_Top {} by stake; total shown: {:.2} LPT_",
+        delegators.len(),
+        total_lpt
+    );
+    buf
 }
 
 #[poise::command(slash_command, ephemeral)]
@@ -270,6 +277,43 @@ fn error_reply(msg: &str) -> CreateReply {
             .description(msg)
             .colour(Colour::from_rgb(0xd0, 0x4a, 0x4a)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_delegators_description;
+    use crate::domains::explorer::types::OrchDelegatorRow;
+
+    fn delegator(addr: &str, bonded_principal: &str) -> OrchDelegatorRow {
+        OrchDelegatorRow {
+            delegator_address: addr.to_string(),
+            bonded_principal: bonded_principal.to_string(),
+            pending_stake: None,
+            pending_fees: None,
+            pending_round: None,
+            as_of_block: "0".into(),
+            as_of_timestamp: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn delegators_description_uses_lpt_units_directly() {
+        let rows = vec![
+            delegator("0xde42f514869714f911fb61f9a07f6149fcb3c52c", "7269.467093857653"),
+            delegator("0x8db248cba18678df52b1093b675385da94587dfe", "3628.178738145608"),
+        ];
+        let total = 10897.645832003261;
+
+        let description = format_delegators_description(
+            "0xb120a72a9264e90092e8197c0fabd210c18bc5be",
+            &rows,
+            total,
+        );
+
+        assert!(description.contains("**#1** `0xde42…c52c` — 7269.47 LPT (66.71%)"));
+        assert!(description.contains("**#2** `0x8db2…7dfe` — 3628.18 LPT (33.29%)"));
+        assert!(description.contains("_Top 2 by stake; total shown: 10897.65 LPT_"));
+    }
 }
 
 /// For the given period, returns the `[from, to]` date range for the LAST

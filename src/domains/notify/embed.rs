@@ -4,6 +4,7 @@
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::{json, Value};
+use url::Url;
 
 use crate::domains::{
     explorer::types::{
@@ -96,7 +97,7 @@ pub fn build_single_ticket(
         "timestamp": timestamp,
         "url": url,
     });
-    if let Some(thumb) = orch.avatar_url.as_deref() {
+    if let Some(thumb) = valid_thumbnail_url(orch.avatar_url.as_deref()) {
         embed
             .as_object_mut()
             .unwrap()
@@ -216,7 +217,7 @@ pub fn build_digest(
         "timestamp": rfc3339(newest_ts),
         "url": url,
     });
-    if let Some(thumb) = orch.avatar_url.as_deref() {
+    if let Some(thumb) = valid_thumbnail_url(orch.avatar_url.as_deref()) {
         embed
             .as_object_mut()
             .unwrap()
@@ -356,6 +357,15 @@ fn median(values: &mut [f64]) -> Option<f64> {
     }
     values.sort_by(|a, b| a.total_cmp(b));
     Some(values[values.len() / 2])
+}
+
+fn valid_thumbnail_url(raw: Option<&str>) -> Option<&str> {
+    let raw = raw?;
+    let parsed = Url::parse(raw).ok()?;
+    match parsed.scheme() {
+        "http" | "https" => Some(raw),
+        _ => None,
+    }
 }
 
 fn rfc3339(ts: DateTime<Utc>) -> String {
