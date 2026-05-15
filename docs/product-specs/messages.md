@@ -136,7 +136,29 @@ Commission: {orch_total_commission_eth:.4} ETH ({orch_total_commission_percent:.
 | Broadcaster dashboard | `https://tools.livepeer.cloud/broadcaster/{addr}` |
 | Payout summary | `https://tools.livepeer.cloud/payout/{daily\|weekly\|monthly}/summary/{YYYY-MM-DD}` |
 
-## 4. Slash command response embeds
+## 4. Reward event DM (subscriber)
+
+Built with `serenity::all::CreateMessage` + `CreateEmbed`. Sent privately to each user subscribed to the orchestrator that triggered the `Reward` event. Source: `src/domains/notify/dm.rs::build_reward_event_dm`.
+
+| Field | Value |
+|---|---|
+| `title` | `"Reward earned"` |
+| `color` | `#ffa500` (orange) |
+| `timestamp` | event `block_timestamp` |
+| `thumbnail.url` | orchestrator `avatar_url` if present, omitted otherwise |
+| `description` | see below |
+
+### Description format
+
+```
+[**{orch_name}**](https://tools.livepeer.cloud/orchestrator/{orch_addr}) earned **{lpt:.4} LPT**{ (~${usd:.2})}? in inflation rewards.
+
+[View transaction](https://arbiscan.io/tx/{tx_hash})
+```
+
+The `(~${usd:.2})` parenthesized USD value is appended only when `amount_usd > 0` (the explorer returns valuations alongside the event when priced). If the orchestrator has no `display_name`, the raw address is shown in the bold link text.
+
+## 5. Slash command response embeds
 
 Built with `serenity::all::CreateEmbed` (NOT `serde_json::Value`) because they are gateway responses, not webhook posts. All slash command replies are **ephemeral** (`CreateReply::default().ephemeral(true)`). See `src/domains/commands/`.
 

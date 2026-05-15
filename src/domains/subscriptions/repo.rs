@@ -96,8 +96,9 @@ impl SqliteSubscriptionsRepo {
         Ok(row.get(0))
     }
 
-    /// Used by future per-event DM fan-out (004b / 004c). Returns every user
-    /// subscribed to a given orchestrator.
+    /// Returns every user subscribed to a given orchestrator. Used by the
+    /// reward poller (004b) and the subscriber digest poster (004c) for
+    /// fan-out.
     pub async fn find_for_orchestrator(
         &self,
         orchestrator_address: &str,
@@ -122,5 +123,56 @@ impl SqliteSubscriptionsRepo {
                 dm_failure_count: r.get(3),
             })
             .collect())
+    }
+
+    /// Increment the DM failure counter for a subscription. Returns the new
+    /// counter value so the caller can decide whether to auto-unsubscribe.
+    pub async fn increment_dm_failure(
+        &self,
+        discord_user_id: &str,
+        orchestrator_address: &str,
+    ) -> anyhow::Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"
+            UPDATE subscriptions
+            SET dm_failure_count = dm_failure_count + 1
+            WHERE discord_user_id = ? AND orchestrator_address = ?
+            "#,
+        )
+        .bind(discord_user_id)
+        .bind(orchestrator_address)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            "SELECT dm_failure_count FROM subscriptions WHERE discord_user_id = ? AND orchestrator_address = ?",
+        )
+        .bind(discord_user_id)
+        .bind(orchestrator_address)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(row.map(|r| r.get::<i64, _>(0)).unwrap_or(0))
+    }
+
+    /// Reset the failure counter to zero after a successful DM.
+    pub async fn clear_dm_failure(
+        &self,
+        discord_user_id: &str,
+        orchestrator_address: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE subscriptions
+            SET dm_failure_count = 0
+            WHERE discord_user_id = ? AND orchestrator_address = ?
+              AND dm_failure_count > 0
+            "#,
+        )
+        .bind(discord_user_id)
+        .bind(orchestrator_address)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 }

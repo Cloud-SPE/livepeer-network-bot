@@ -27,10 +27,22 @@ impl ExplorerClient {
         cursor: Option<&str>,
         limit: u32,
     ) -> anyhow::Result<EventListResponse> {
+        self.list_events("WinningTicketRedeemed", cursor, limit)
+            .await
+    }
+
+    /// Generic single-event-name listing with valuations. Each call passes
+    /// one event_name (the explorer doesn't accept a CSV list).
+    pub async fn list_events(
+        &self,
+        event_name: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> anyhow::Result<EventListResponse> {
         let mut url = self.url("api/v1/events")?;
         {
             let mut q = url.query_pairs_mut();
-            q.append_pair("event_name", "WinningTicketRedeemed");
+            q.append_pair("event_name", event_name);
             q.append_pair("with_valuations", "true");
             q.append_pair("limit", &limit.to_string());
             if let Some(c) = cursor {

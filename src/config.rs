@@ -10,6 +10,8 @@ pub struct Config {
     pub event_poll_interval: Duration,
     pub digest_window: Duration,
     pub summary_poll_interval: Duration,
+    pub reward_poll_interval: Duration,
+    pub delegator_poll_interval: Duration,
     pub http_timeout: Duration,
     pub user_agent: String,
     pub commands: Option<CommandsConfig>,
@@ -25,6 +27,8 @@ pub struct CommandsConfig {
     /// useful during development). When `None`, registration is global.
     pub guild_id: Option<u64>,
     pub max_subscriptions_per_user: u32,
+    /// Consecutive DM 403 failures before a subscription is auto-removed.
+    pub dm_failure_auto_unsub: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +53,8 @@ impl Config {
         let event_poll_interval = secs_var("EVENT_POLL_INTERVAL_SECS", 60)?;
         let digest_window = secs_var("DIGEST_WINDOW_SECS", 15 * 60)?;
         let summary_poll_interval = secs_var("SUMMARY_POLL_INTERVAL_SECS", 60 * 60)?;
+        let reward_poll_interval = secs_var("REWARD_POLL_INTERVAL_SECS", 60)?;
+        let delegator_poll_interval = secs_var("DELEGATOR_POLL_INTERVAL_SECS", 60)?;
         let http_timeout = secs_var("HTTP_TIMEOUT_SECS", 30)?;
 
         let user_agent =
@@ -67,6 +73,8 @@ impl Config {
             event_poll_interval,
             digest_window,
             summary_poll_interval,
+            reward_poll_interval,
+            delegator_poll_interval,
             http_timeout,
             user_agent,
             commands,
@@ -81,12 +89,14 @@ impl CommandsConfig {
         let application_id = u64_var("DISCORD_APPLICATION_ID")?;
         let guild_id = optional_u64_var("DISCORD_GUILD_ID")?;
         let max_subscriptions_per_user = u32_var("MAX_SUBSCRIPTIONS_PER_USER", 25)?;
+        let dm_failure_auto_unsub = i64_var("DM_FAILURE_AUTO_UNSUB", 3)?;
 
         Ok(Self {
             bot_token,
             application_id,
             guild_id,
             max_subscriptions_per_user,
+            dm_failure_auto_unsub,
         })
     }
 }
@@ -151,6 +161,18 @@ fn optional_u64_var(name: &'static str) -> Result<Option<u64>, ConfigError> {
 }
 
 fn u32_var(name: &'static str, default: u32) -> Result<u32, ConfigError> {
+    let raw = match std::env::var(name) {
+        Ok(v) => v,
+        Err(_) => return Ok(default),
+    };
+    raw.parse()
+        .map_err(|e: std::num::ParseIntError| ConfigError::Invalid {
+            var: name,
+            source: anyhow::Error::new(e),
+        })
+}
+
+fn i64_var(name: &'static str, default: i64) -> Result<i64, ConfigError> {
     let raw = match std::env::var(name) {
         Ok(v) => v,
         Err(_) => return Ok(default),
