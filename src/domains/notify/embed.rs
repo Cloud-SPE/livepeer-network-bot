@@ -35,10 +35,10 @@ pub fn build_single_ticket(
     totals_24h: &OrchTotals,
 ) -> Value {
     let face_value: f64 = parse_f64(&ticket.event.amount_native);
-    let face_value_usd: f64 = parse_f64(&ticket.event.amount_usd);
-    let eth_price: f64 = parse_f64(&ticket.event.native_usd_price);
+    let face_value_usd = parse_positive_f64(&ticket.event.amount_usd);
+    let eth_price = parse_positive_f64(&ticket.event.native_usd_price);
     let orch_commission = face_value * fee_cut;
-    let orch_commission_usd = face_value_usd * fee_cut;
+    let orch_commission_usd = face_value_usd.map(|usd| usd * fee_cut);
 
     let is_ai = ticket.gateway.is_ai();
     let (color, job_sentence) = if is_ai {
@@ -59,31 +59,32 @@ pub fn build_single_ticket(
         .clone()
         .unwrap_or_else(|| bcast_addr.to_string());
 
-    let description = format!(
-        "[**{}**](https://tools.livepeer.cloud/orchestrator/{}) just earned **{:.4} ETH ${:.2}**\n{}\n\n\
-         Paid By [**{}**](https://tools.livepeer.cloud/broadcaster/{})\n\
-         ETH Price **${:.2}**\n\
-         Fee cut: **{:.2}%**\n\
-         Commission: **{:.4} ETH (${:.2})**\n\n\
-         24H Rolling Total\n\
-         **{:.4} ETH (${:.2})**\n\
-         Keeping {:.5} ETH (${:.2})",
+    let mut description = format!(
+        "[**{}**](https://tools.livepeer.cloud/orchestrator/{}) just earned {}\n{}\n\n\
+         Paid By [**{}**](https://tools.livepeer.cloud/broadcaster/{})\n",
         orch_name,
         orch_addr,
-        face_value,
-        face_value_usd,
+        format_eth_usd(face_value, face_value_usd),
         job_sentence,
         bcast_name,
         bcast_addr,
-        eth_price,
+    );
+    if let Some(eth_price) = eth_price {
+        description.push_str(&format!("ETH Price **${eth_price:.2}**\n"));
+    }
+    description.push_str(&format!(
+        "Fee cut: **{:.2}%**\n\
+         Commission: {}\n\n\
+         24H Rolling Total\n\
+         **{:.4} ETH (${:.2})**\n\
+         Keeping {:.5} ETH (${:.2})",
         fee_cut * 100.0,
-        orch_commission,
-        orch_commission_usd,
+        format_commission(orch_commission, orch_commission_usd),
         totals_24h.face_value_eth,
         totals_24h.face_value_usd,
         totals_24h.commission_eth,
         totals_24h.commission_usd,
-    );
+    ));
 
     let timestamp = rfc3339(ticket.event.block_timestamp);
     let url = format!("https://arbiscan.io/tx/{}", ticket.event.tx_hash);
@@ -111,23 +112,31 @@ pub fn build_digest(
     is_ai: bool,
     tickets: &[TicketView],
     fee_cut: f64,
-    window_end: DateTime<Utc>,
     totals_24h: &OrchTotals,
 ) -> Value {
     let mut sum_face_eth = 0.0;
     let mut sum_face_usd = 0.0;
-    let mut eth_price = 0.0;
+    let mut priced_ticket_count = 0usize;
+    let mut eth_prices = Vec::new();
+    let newest_ts = tickets
+        .iter()
+        .map(|t| t.event.block_timestamp)
+        .max()
+        .unwrap_or_else(Utc::now);
 
     use std::collections::BTreeMap;
     let mut by_bcast: BTreeMap<String, (String, usize, f64)> = BTreeMap::new();
 
     for t in tickets {
         let fv = parse_f64(&t.event.amount_native);
-        let fv_usd = parse_f64(&t.event.amount_usd);
+        let fv_usd = parse_positive_f64(&t.event.amount_usd);
         sum_face_eth += fv;
-        sum_face_usd += fv_usd;
-        if eth_price == 0.0 {
-            eth_price = parse_f64(&t.event.native_usd_price);
+        if let Some(fv_usd) = fv_usd {
+            sum_face_usd += fv_usd;
+            priced_ticket_count += 1;
+        }
+        if let Some(price) = sane_eth_price(t.event.native_usd_price.as_deref(), fv, fv_usd) {
+            eth_prices.push(price);
         }
         let bcast_addr = t.event.from_address.clone().unwrap_or_default();
         let bcast_name = t
@@ -141,8 +150,10 @@ pub fn build_digest(
     }
 
     let sum_keep_eth = sum_face_eth * fee_cut;
-    let sum_keep_usd = sum_face_usd * fee_cut;
+    let sum_face_usd = (priced_ticket_count > 0).then_some(sum_face_usd);
+    let sum_keep_usd = sum_face_usd.map(|usd| usd * fee_cut);
     let avg_fee_cut = fee_cut * 100.0;
+    let eth_price = median(&mut eth_prices);
 
     let mut gateways: Vec<_> = by_bcast.into_iter().collect();
     gateways.sort_by(|a, b| b.1 .2.total_cmp(&a.1 .2));
@@ -168,30 +179,30 @@ pub fn build_digest(
         .clone()
         .unwrap_or_else(|| orch_addr.to_string());
 
-    let description = format!(
-        "[**{}**](https://tools.livepeer.cloud/orchestrator/{}) just earned **{:.4} ETH ${:.2}**\n{}\n\n\
-         Paid By:\n{}\n\n\
-         ETH Price **${:.2}**\n\
-         Fee cut: **{:.2}%**\n\
-         Commission: **{:.4} ETH (${:.2})**\n\n\
+    let mut description = format!(
+        "[**{}**](https://tools.livepeer.cloud/orchestrator/{}) just earned {}\n{}\n\n\
+         Paid By:\n{}\n\n",
+        orch_name,
+        orch_addr,
+        format_eth_usd(sum_face_eth, sum_face_usd),
+        job_sentence,
+        gateway_lines.join("\n"),
+    );
+    if let Some(eth_price) = eth_price {
+        description.push_str(&format!("ETH Price **${eth_price:.2}**\n"));
+    }
+    description.push_str(&format!(
+        "Fee cut: **{avg_fee_cut:.2}%**\n\
+         Commission: {}\n\n\
          24H Rolling Total\n\
          **{:.4} ETH (${:.2})**\n\
          Keeping {:.5} ETH (${:.2})",
-        orch_name,
-        orch_addr,
-        sum_face_eth,
-        sum_face_usd,
-        job_sentence,
-        gateway_lines.join("\n"),
-        eth_price,
-        avg_fee_cut,
-        sum_keep_eth,
-        sum_keep_usd,
+        format_commission(sum_keep_eth, sum_keep_usd),
         totals_24h.face_value_eth,
         totals_24h.face_value_usd,
         totals_24h.commission_eth,
         totals_24h.commission_usd,
-    );
+    ));
 
     let url = format!(
         "https://arbiscan.io/address/{}?mtd=0xec8b3cb6~Redeem%20Winning%20Ticket",
@@ -202,7 +213,7 @@ pub fn build_digest(
         "color": color,
         "title": TITLE,
         "description": description,
-        "timestamp": rfc3339(window_end),
+        "timestamp": rfc3339(newest_ts),
         "url": url,
     });
     if let Some(thumb) = orch.avatar_url.as_deref() {
@@ -300,6 +311,51 @@ fn parse_f64(s: &Option<String>) -> f64 {
     s.as_deref()
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.0)
+}
+
+fn parse_positive_f64(s: &Option<String>) -> Option<f64> {
+    s.as_deref()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 0.0)
+}
+
+fn format_eth_usd(eth: f64, usd: Option<f64>) -> String {
+    match usd {
+        Some(usd) => format!("**{eth:.4} ETH ${usd:.2}**"),
+        None => format!("**{eth:.4} ETH**"),
+    }
+}
+
+fn format_commission(eth: f64, usd: Option<f64>) -> String {
+    match usd {
+        Some(usd) => format!("**{eth:.4} ETH (${usd:.2})**"),
+        None => format!("**{eth:.4} ETH**"),
+    }
+}
+
+fn sane_eth_price(price: Option<&str>, face_value_eth: f64, face_value_usd: Option<f64>) -> Option<f64> {
+    let direct = price.and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 100.0);
+    let derived = face_value_usd
+        .filter(|_| face_value_eth > 0.0)
+        .map(|usd| usd / face_value_eth)
+        .filter(|v| *v > 100.0);
+    match (direct, derived) {
+        (Some(direct), Some(derived)) if ((direct - derived).abs() / derived.max(1.0)) <= 0.2 => {
+            Some(derived)
+        }
+        (Some(_direct), Some(derived)) => Some(derived),
+        (Some(direct), None) => Some(direct),
+        (None, Some(derived)) => Some(derived),
+        (None, None) => None,
+    }
+}
+
+fn median(values: &mut [f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    Some(values[values.len() / 2])
 }
 
 fn rfc3339(ts: DateTime<Utc>) -> String {

@@ -9,6 +9,7 @@ pub struct Config {
     pub database_url: String,
     pub event_poll_interval: Duration,
     pub digest_window: Duration,
+    pub digest_fetch_limit: u32,
     pub summary_poll_interval: Duration,
     pub reward_poll_interval: Duration,
     pub delegator_poll_interval: Duration,
@@ -53,6 +54,7 @@ impl Config {
 
         let event_poll_interval = secs_var("EVENT_POLL_INTERVAL_SECS", 60)?;
         let digest_window = secs_var("DIGEST_WINDOW_SECS", 15 * 60)?;
+        let digest_fetch_limit = u32_var("DIGEST_FETCH_LIMIT", 500)?;
         let summary_poll_interval = secs_var("SUMMARY_POLL_INTERVAL_SECS", 60 * 60)?;
         let reward_poll_interval = secs_var("REWARD_POLL_INTERVAL_SECS", 60)?;
         let delegator_poll_interval = secs_var("DELEGATOR_POLL_INTERVAL_SECS", 60)?;
@@ -74,6 +76,7 @@ impl Config {
             database_url,
             event_poll_interval,
             digest_window,
+            digest_fetch_limit,
             summary_poll_interval,
             reward_poll_interval,
             delegator_poll_interval,

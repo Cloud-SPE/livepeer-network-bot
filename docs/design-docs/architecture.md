@@ -2,10 +2,10 @@
 
 ## One-paragraph summary
 
-A single Rust binary runs three concurrent `tokio::time::interval` loops:
+A single Rust binary runs three concurrent scheduler loops:
 
 1. **Event poller** — queries `GET /api/v1/events?event_name=WinningTicketRedeemed&with_valuations=true&cursor=…` against the Livepeer protocol explorer, persists new event rows into SQLite, advances the cursor watermark. Never posts to Discord.
-2. **Digest poster** — every N minutes (default 15), reads unposted events from SQLite, groups by orchestrator + job type (AI / transcoding), enriches with `/orchestrators/{address}` and `/gateways/{address}/profile` lookups, and POSTs one or more embeds per orchestrator to a Discord webhook. Marks events as posted.
+2. **Digest poster** — on wall-clock N-minute boundaries (default every 15 minutes), reads oldest unposted events from SQLite up to a bounded per-run cap, groups by orchestrator + job type (AI / transcoding), enriches with `/orchestrators/{address}` and `/gateways/{address}/profile` lookups, sorts the concrete outgoing messages by effective embed timestamp ascending (oldest first), and POSTs them to a Discord webhook. Marks events as posted.
 3. **Summary poster** — at daily / weekly / monthly boundaries, reads `/payouts/summary/{period}/{date}` for network totals plus `/payouts/leaderboard?from=…&to=…&limit=10` for the per-orch top-10 and posts the summary embed. Watermarks prevent double-posting.
 
 All three loops share an `Arc<AppState>` that holds typed providers (HTTP client, Discord notifier, SQLite pool, clock). They never call each other.

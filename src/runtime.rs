@@ -49,8 +49,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         let notifier = notifier.clone();
         let state = state.clone();
         let window = config.digest_window;
+        let fetch_limit = config.digest_fetch_limit;
         tasks.spawn(async move {
-            digest_poster::run(explorer, notifier, state, window).await;
+            digest_poster::run(explorer, notifier, state, window, fetch_limit).await;
         });
     }
     {

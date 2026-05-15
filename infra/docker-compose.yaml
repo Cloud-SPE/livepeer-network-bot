@@ -1,0 +1,9 @@
+services:
+  livepeer-network-bot:
+    image: tztcloud/livepeer-network-bot:latest
+    container_name: livepeer-network-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data

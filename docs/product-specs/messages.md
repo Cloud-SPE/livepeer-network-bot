@@ -46,6 +46,10 @@ Keeping {total_orch_commission:.5} ETH (${total_orch_commission_usd:.2})
 - `{job_type_sentence}` is `"performing AI inference."` or `"transcoding video streams."`
 - `{fee_cut_percent}` is `fee_cut * 100.0` (fee_cut comes from the API as a percent already; divide by 100 when fetched, multiply here for display)
 - The 24h rolling totals come from the local SQLite `events` table aggregated over the prior 24 hours for that orchestrator address
+- If `amount_usd` / `native_usd_price` are missing or zero for the ticket, the embed falls back to ETH-only formatting:
+  - headline becomes `**{face_value:.4} ETH**`
+  - `ETH Price …` line is omitted
+  - commission line becomes `Commission: **{orch_commission:.4} ETH**`
 
 ## 2. Multi-ticket digest embed
 
@@ -56,7 +60,7 @@ Posted when a digest window contains 2+ winning tickets for an orchestrator. Tic
 | `color` | `0xFFA500` (orange) if AI, `0xFFD700` (gold) if transcoding |
 | `title` | `"Orchestrator Payout"` |
 | `url` | `"https://arbiscan.io/address/{orch_addr}?mtd=0xec8b3cb6~Redeem%20Winning%20Ticket"` |
-| `timestamp` | end of digest window, RFC 3339 |
+| `timestamp` | newest ticket `block_timestamp` in the batch, RFC 3339 |
 | `thumbnail.url` | orchestrator `avatar_url` if present, omitted otherwise |
 | `description` | see below |
 
@@ -82,8 +86,10 @@ Keeping {total_orch_commission:.5} ETH (${total_orch_commission_usd:.2})
   ```
   • [{name}](https://tools.livepeer.cloud/broadcaster/{eth}) — {count} Tickets for {total_eth:.4} ETH
   ```
-- `{eth_price}` is taken from the first ticket in the batch (all tickets in a 15-min window have effectively the same price)
+- `{eth_price}` is derived from sane priced rows in the batch (preferring rows whose direct and derived prices agree; median selection across valid rows)
 - `{avg_fee_cut}` is `(sum(fee_cut) / ticket_count) * 100.0`
+- If a ticket batch has missing/zero valuation fields, the digest uses only sane priced rows for USD totals and ETH price selection. When no sane batch ETH price exists, the `ETH Price …` line is omitted and the headline / commission fallback to ETH-only formatting.
+- Across a digest run, outgoing public-channel payout messages are posted oldest effective timestamp first. Single-ticket messages use the event timestamp; multi-ticket messages use the newest ticket timestamp in that batch.
 
 > ⚠️ Note: the single-ticket embed and the multi-ticket digest use **different color palettes**. This is intentional and preserved from backend-rs. Single-ticket: `16766720` / `60296`. Digest: `0xFFA500` / `0xFFD700`.
 

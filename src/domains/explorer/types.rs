@@ -16,6 +16,16 @@ pub use super::generated::types::{
     RewardLeaderboardResponse, RewardLeaderboardRow, ValuationInline,
 };
 
+pub fn preferred_valuation(valuations: &[ValuationInline]) -> Option<&ValuationInline> {
+    valuations.iter().max_by_key(|v| {
+        (
+            status_rank(&v.status),
+            has_positive_number(v.amount_usd.as_deref()),
+            has_positive_number(v.native_usd_price.as_deref()),
+        )
+    })
+}
+
 /// Period selector for the daily / weekly / monthly summary endpoints. Not
 /// in the OpenAPI spec — this is how the bot models the three URL templates
 /// uniformly.
@@ -55,4 +65,16 @@ impl GatewayProfileRowExt for GatewayProfileRow {
     fn is_ai(&self) -> bool {
         self.kind == "ai"
     }
+}
+
+fn status_rank(status: &str) -> u8 {
+    match status {
+        "priced" => 3,
+        "priced_with_warning" => 2,
+        _ => 1,
+    }
+}
+
+fn has_positive_number(raw: Option<&str>) -> bool {
+    raw.and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) > 0.0
 }

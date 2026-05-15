@@ -3,8 +3,9 @@ use reqwest::Client;
 use url::Url;
 
 use super::types::{
-    Cadence, EventListResponse, GatewayProfileRow, OrchDelegatorsResponse, OrchestratorProfileRow,
-    PayoutLeaderboardResponse, PayoutSummaryResponse, RewardLeaderboardResponse,
+    Cadence, EventListResponse, EventRow, GatewayProfileRow, OrchDelegatorsResponse,
+    OrchestratorProfileRow, PayoutLeaderboardResponse, PayoutSummaryResponse,
+    RewardLeaderboardResponse,
 };
 
 #[derive(Clone, Debug)]
@@ -29,6 +30,22 @@ impl ExplorerClient {
     ) -> anyhow::Result<EventListResponse> {
         self.list_events("WinningTicketRedeemed", cursor, limit)
             .await
+    }
+
+    pub async fn get_winning_ticket_by_tx_hash(
+        &self,
+        tx_hash: &str,
+    ) -> anyhow::Result<Option<EventRow>> {
+        let mut url = self.url("api/v1/events")?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("event_name", "WinningTicketRedeemed");
+            q.append_pair("tx_hash", tx_hash);
+            q.append_pair("with_valuations", "true");
+            q.append_pair("limit", "10");
+        }
+        let resp: EventListResponse = self.client.get(url).send().await?.error_for_status()?.json().await?;
+        Ok(resp.data.into_iter().find(|ev| ev.tx_hash == tx_hash))
     }
 
     /// Generic single-event-name listing with valuations. Each call passes

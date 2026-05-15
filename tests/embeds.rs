@@ -92,6 +92,40 @@ fn stored_event_fixture(
     }
 }
 
+fn stored_event_fixture_at(
+    id: &str,
+    tx: &str,
+    from: &str,
+    to: &str,
+    eth: &str,
+    usd: &str,
+    price: &str,
+    timestamp: DateTime<Utc>,
+) -> StoredEvent {
+    let mut event = stored_event_fixture(id, tx, from, to, eth, usd, price);
+    event.block_timestamp = timestamp;
+    event
+}
+
+fn stored_event_without_valuation(
+    id: &str,
+    tx: &str,
+    from: &str,
+    to: &str,
+    eth: &str,
+) -> StoredEvent {
+    StoredEvent {
+        id: id.into(),
+        tx_hash: tx.into(),
+        block_timestamp: ts(2026, 5, 15, 12, 30, 0),
+        from_address: Some(from.into()),
+        to_address: Some(to.into()),
+        amount_native: Some(eth.into()),
+        amount_usd: None,
+        native_usd_price: None,
+    }
+}
+
 // ----- build_single_ticket -------------------------------------------------
 
 #[test]
@@ -133,6 +167,42 @@ fn single_ticket_embed_shape() {
     assert_eq!(actual, expected);
 }
 
+#[test]
+fn single_ticket_embed_omits_missing_valuation() {
+    let event = stored_event_without_valuation(
+        "311469",
+        "0xtx0002",
+        "0xbcst0002",
+        "0xorch0002",
+        "0.0824",
+    );
+    let gateway = gateway_fixture("0xbcst0002", "MyBroadcaster", "transcoding");
+    let view = TicketView { event, gateway };
+    let orch = orch_fixture("MyOrch", "0xorch0002", "30", None);
+    let totals = OrchTotals {
+        face_value_eth: 1.234,
+        face_value_usd: 567.89,
+        commission_eth: 0.3702,
+        commission_usd: 170.37,
+    };
+
+    let actual = build_single_ticket(&orch, &view, 0.30, &totals);
+
+    let expected = json!({
+        "username": "Payout Alert Bot",
+        "avatar_url": "https://cdn.discordapp.com/avatars/808142296959680532/338766470b721d9081680c7cb34921df.webp?size=80",
+        "embeds": [{
+            "color": 60296,
+            "title": "Orchestrator Payout",
+            "description": "[**MyOrch**](https://tools.livepeer.cloud/orchestrator/0xorch0002) just earned **0.0824 ETH**\ntranscoding video streams.\n\nPaid By [**MyBroadcaster**](https://tools.livepeer.cloud/broadcaster/0xbcst0002)\nFee cut: **30.00%**\nCommission: **0.0247 ETH**\n\n24H Rolling Total\n**1.2340 ETH ($567.89)**\nKeeping 0.37020 ETH ($170.37)",
+            "timestamp": "2026-05-15T12:30:00+00:00",
+            "url": "https://arbiscan.io/tx/0xtx0002",
+        }]
+    });
+
+    assert_eq!(actual, expected);
+}
+
 // ----- build_digest (multi-ticket, AI grouped) -----------------------------
 
 #[test]
@@ -147,8 +217,15 @@ fn digest_embed_shape() {
         gateway: gateway_fixture("0xbcstA", "AiGateway1", "ai"),
     };
     let t2 = TicketView {
-        event: stored_event_fixture(
-            "2", "0xtxB", "0xbcstA", orch_addr, "0.0500", "159.29", "3185.81",
+        event: stored_event_fixture_at(
+            "2",
+            "0xtxB",
+            "0xbcstA",
+            orch_addr,
+            "0.0500",
+            "159.29",
+            "3185.81",
+            ts(2026, 5, 15, 12, 45, 0),
         ),
         gateway: gateway_fixture("0xbcstA", "AiGateway1", "ai"),
     };
@@ -166,7 +243,6 @@ fn digest_embed_shape() {
         true,
         &[t1, t2],
         0.30,
-        ts(2026, 5, 15, 13, 0, 0),
         &totals,
     );
 
@@ -176,8 +252,8 @@ fn digest_embed_shape() {
         "embeds": [{
             "color": 0xFFA500,
             "title": "Orchestrator Payout",
-            "description": "[**MyOrch**](https://tools.livepeer.cloud/orchestrator/0xorch0001) just earned **0.1500 ETH $477.87**\nperforming AI inference.\n\nPaid By:\n• [AiGateway1](https://tools.livepeer.cloud/broadcaster/0xbcstA) — 2 Tickets for 0.1500 ETH\n\nETH Price **$3185.81**\nFee cut: **30.00%**\nCommission: **0.0450 ETH ($143.36)**\n\n24H Rolling Total\n**2.0000 ETH ($6372.00)**\nKeeping 0.60000 ETH ($1911.60)",
-            "timestamp": "2026-05-15T13:00:00+00:00",
+            "description": "[**MyOrch**](https://tools.livepeer.cloud/orchestrator/0xorch0001) just earned **0.1500 ETH $477.87**\nperforming AI inference.\n\nPaid By:\n• [AiGateway1](https://tools.livepeer.cloud/broadcaster/0xbcstA) — 2 Tickets for 0.1500 ETH\n\nETH Price **$3185.80**\nFee cut: **30.00%**\nCommission: **0.0450 ETH ($143.36)**\n\n24H Rolling Total\n**2.0000 ETH ($6372.00)**\nKeeping 0.60000 ETH ($1911.60)",
+            "timestamp": "2026-05-15T12:45:00+00:00",
             "url": "https://arbiscan.io/address/0xorch0001?mtd=0xec8b3cb6~Redeem%20Winning%20Ticket",
         }]
     });

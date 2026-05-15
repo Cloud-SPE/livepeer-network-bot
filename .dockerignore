@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+infra/.env
+target
+livepeer-payout-bot.db
+*.db
+*.db-shm
+*.db-wal
+infra/data

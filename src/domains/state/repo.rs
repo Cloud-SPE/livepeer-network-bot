@@ -1,7 +1,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
 
-use crate::domains::explorer::types::{Cadence, EventRow};
+use crate::domains::explorer::types::{preferred_valuation, Cadence, EventRow};
 
 #[derive(Debug, Clone)]
 pub struct StoredEvent {
@@ -33,7 +33,7 @@ impl SqliteStateRepo {
     }
 
     pub async fn insert_event(&self, ev: &EventRow) -> anyhow::Result<bool> {
-        let val = ev.valuations.as_ref().and_then(|v| v.first());
+        let val = ev.valuations.as_ref().and_then(|v| preferred_valuation(v));
         let amount_usd = val.and_then(|v| v.amount_usd.clone());
         let native_usd_price = val.and_then(|v| v.native_usd_price.clone());
 
@@ -73,6 +73,47 @@ impl SqliteStateRepo {
         .bind(Utc::now())
         .execute(&self.pool)
         .await?;
+        if amount_usd.is_some() || native_usd_price.is_some() {
+            self.repair_pending_event_valuation(&ev.id, amount_usd, native_usd_price)
+                .await?;
+        }
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn repair_pending_event_valuation(
+        &self,
+        id: &str,
+        amount_usd: Option<String>,
+        native_usd_price: Option<String>,
+    ) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE events
+               SET amount_usd = CASE
+                       WHEN ? IS NOT NULL AND CAST(? AS REAL) > 0
+                            AND (amount_usd IS NULL OR CAST(amount_usd AS REAL) <= 0)
+                       THEN ?
+                       ELSE amount_usd
+                   END,
+                   native_usd_price = CASE
+                       WHEN ? IS NOT NULL AND CAST(? AS REAL) > 0
+                            AND (native_usd_price IS NULL OR CAST(native_usd_price AS REAL) <= 0)
+                       THEN ?
+                       ELSE native_usd_price
+                   END
+             WHERE id = ?
+               AND sent_to_discord = 0
+            "#,
+        )
+        .bind(&amount_usd)
+        .bind(&amount_usd)
+        .bind(&amount_usd)
+        .bind(&native_usd_price)
+        .bind(&native_usd_price)
+        .bind(&native_usd_price)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -102,11 +143,7 @@ impl SqliteStateRepo {
         Ok(())
     }
 
-    pub async fn fetch_unsent_between(
-        &self,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-    ) -> anyhow::Result<Vec<StoredEvent>> {
+    pub async fn fetch_unsent(&self, limit: i64) -> anyhow::Result<Vec<StoredEvent>> {
         let rows = sqlx::query(
             r#"
             SELECT id, tx_hash, block_timestamp, from_address, to_address,
@@ -114,13 +151,11 @@ impl SqliteStateRepo {
             FROM events
             WHERE sent_to_discord = 0
               AND event_name = 'WinningTicketRedeemed'
-              AND block_timestamp >= ?
-              AND block_timestamp < ?
             ORDER BY block_timestamp ASC
+            LIMIT ?
             "#,
         )
-        .bind(start)
-        .bind(end)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
