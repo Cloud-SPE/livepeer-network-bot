@@ -6,7 +6,9 @@ use serde_json::Value;
 use crate::domains::{
     explorer::{
         client::ExplorerClient,
-        types::{preferred_valuation, GatewayProfileRow, GatewayProfileRowExt, OrchestratorProfileRow},
+        types::{
+            preferred_valuation, GatewayProfileRow, GatewayProfileRowExt, OrchestratorProfileRow,
+        },
     },
     notify::{
         embed::{build_digest, build_single_ticket, TicketView},
@@ -166,7 +168,10 @@ async fn refresh_event_valuation(
     state: &SqliteStateRepo,
     event: &mut StoredEvent,
 ) -> anyhow::Result<()> {
-    let Some(fresh) = explorer.get_winning_ticket_by_tx_hash(&event.tx_hash).await? else {
+    let Some(fresh) = explorer
+        .get_winning_ticket_by_tx_hash(&event.tx_hash)
+        .await?
+    else {
         return Ok(());
     };
     let valuation = fresh
@@ -258,9 +263,7 @@ mod tests {
 
     use super::{next_boundary, run_once};
     use crate::domains::{
-        explorer::client::ExplorerClient,
-        notify::service::Notifier,
-        state::repo::SqliteStateRepo,
+        explorer::client::ExplorerClient, notify::service::Notifier, state::repo::SqliteStateRepo,
     };
 
     struct RecordingNotifier {
@@ -353,9 +356,7 @@ mod tests {
             payloads[0]["embeds"][0]["timestamp"],
             json!(old_ts.to_rfc3339())
         );
-        let description = payloads[0]["embeds"][0]["description"]
-            .as_str()
-            .unwrap();
+        let description = payloads[0]["embeds"][0]["description"].as_str().unwrap();
         assert!(description.contains("**0.5000 ETH $1500.00**"));
         assert!(description.contains("ETH Price **$3000.00**"));
 
@@ -367,12 +368,11 @@ mod tests {
         .unwrap();
         assert_eq!(remaining, 0);
 
-        let repaired: (Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT amount_usd, native_usd_price FROM events WHERE id = 'ticket-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let repaired: (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT amount_usd, native_usd_price FROM events WHERE id = 'ticket-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(repaired.0.as_deref(), Some("1500.0"));
         assert_eq!(repaired.1.as_deref(), Some("3000.0"));
     }
@@ -388,10 +388,42 @@ mod tests {
         let state = SqliteStateRepo::new(pool.clone());
 
         for (id, tx, ts, from, to, usd, price) in [
-            ("e1", "0xtx1", ts(2026, 5, 15, 10, 0, 0), "0xgw-tx", "0xorch-a", "300.0", "3000.0"),
-            ("e2", "0xtx2", ts(2026, 5, 15, 10, 5, 0), "0xgw-ai", "0xorch-b", "200.0", "2000.0"),
-            ("e3", "0xtx3", ts(2026, 5, 15, 10, 6, 0), "0xgw-tx", "0xorch-b", "210.0", "2100.0"),
-            ("e4", "0xtx4", ts(2026, 5, 15, 10, 7, 0), "0xgw-ai", "0xorch-b", "220.0", "2200.0"),
+            (
+                "e1",
+                "0xtx1",
+                ts(2026, 5, 15, 10, 0, 0),
+                "0xgw-tx",
+                "0xorch-a",
+                "300.0",
+                "3000.0",
+            ),
+            (
+                "e2",
+                "0xtx2",
+                ts(2026, 5, 15, 10, 5, 0),
+                "0xgw-ai",
+                "0xorch-b",
+                "200.0",
+                "2000.0",
+            ),
+            (
+                "e3",
+                "0xtx3",
+                ts(2026, 5, 15, 10, 6, 0),
+                "0xgw-tx",
+                "0xorch-b",
+                "210.0",
+                "2100.0",
+            ),
+            (
+                "e4",
+                "0xtx4",
+                ts(2026, 5, 15, 10, 7, 0),
+                "0xgw-ai",
+                "0xorch-b",
+                "220.0",
+                "2200.0",
+            ),
         ] {
             sqlx::query(
                 r#"

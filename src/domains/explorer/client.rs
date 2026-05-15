@@ -44,7 +44,14 @@ impl ExplorerClient {
             q.append_pair("with_valuations", "true");
             q.append_pair("limit", "10");
         }
-        let resp: EventListResponse = self.client.get(url).send().await?.error_for_status()?.json().await?;
+        let resp: EventListResponse = self
+            .client
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
         Ok(resp.data.into_iter().find(|ev| ev.tx_hash == tx_hash))
     }
 

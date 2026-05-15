@@ -169,13 +169,8 @@ fn single_ticket_embed_shape() {
 
 #[test]
 fn single_ticket_embed_omits_missing_valuation() {
-    let event = stored_event_without_valuation(
-        "311469",
-        "0xtx0002",
-        "0xbcst0002",
-        "0xorch0002",
-        "0.0824",
-    );
+    let event =
+        stored_event_without_valuation("311469", "0xtx0002", "0xbcst0002", "0xorch0002", "0.0824");
     let gateway = gateway_fixture("0xbcst0002", "MyBroadcaster", "transcoding");
     let view = TicketView { event, gateway };
     let orch = orch_fixture("MyOrch", "0xorch0002", "30", None);
@@ -280,14 +275,7 @@ fn digest_embed_shape() {
         commission_usd: 1911.6,
     };
 
-    let actual = build_digest(
-        &orch,
-        orch_addr,
-        true,
-        &[t1, t2],
-        0.30,
-        &totals,
-    );
+    let actual = build_digest(&orch, orch_addr, true, &[t1, t2], 0.30, &totals);
 
     let expected = json!({
         "username": "Payout Alert Bot",

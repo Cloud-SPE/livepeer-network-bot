@@ -334,8 +334,14 @@ fn format_commission(eth: f64, usd: Option<f64>) -> String {
     }
 }
 
-fn sane_eth_price(price: Option<&str>, face_value_eth: f64, face_value_usd: Option<f64>) -> Option<f64> {
-    let direct = price.and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 100.0);
+fn sane_eth_price(
+    price: Option<&str>,
+    face_value_eth: f64,
+    face_value_usd: Option<f64>,
+) -> Option<f64> {
+    let direct = price
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| *v > 100.0);
     let derived = face_value_usd
         .filter(|_| face_value_eth > 0.0)
         .map(|usd| usd / face_value_eth)

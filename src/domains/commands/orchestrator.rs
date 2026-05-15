@@ -299,8 +299,14 @@ mod tests {
     #[test]
     fn delegators_description_uses_lpt_units_directly() {
         let rows = vec![
-            delegator("0xde42f514869714f911fb61f9a07f6149fcb3c52c", "7269.467093857653"),
-            delegator("0x8db248cba18678df52b1093b675385da94587dfe", "3628.178738145608"),
+            delegator(
+                "0xde42f514869714f911fb61f9a07f6149fcb3c52c",
+                "7269.467093857653",
+            ),
+            delegator(
+                "0x8db248cba18678df52b1093b675385da94587dfe",
+                "3628.178738145608",
+            ),
         ];
         let total = 10897.645832003261;
 
