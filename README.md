@@ -1,5 +1,36 @@
 # livepeer-payout-bot
 
+[![CI](https://github.com/Cloud-SPE/livepeer-network-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.95-orange.svg?logo=rust)](rust-toolchain.toml)
+[![Edition 2021](https://img.shields.io/badge/edition-2021-blue.svg?logo=rust)](Cargo.toml)
+[![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-dea584.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Tokio](https://img.shields.io/badge/async-tokio-8a2be2.svg)](https://tokio.rs/)
+[![SQLx](https://img.shields.io/badge/db-sqlx-blueviolet.svg)](https://github.com/launchbadge/sqlx)
+[![SQLite](https://img.shields.io/badge/storage-SQLite-003B57.svg?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Poise](https://img.shields.io/badge/discord-poise-5865F2.svg?logo=discord&logoColor=white)](https://github.com/serenity-rs/poise)
+[![Serenity](https://img.shields.io/badge/discord-serenity-5865F2.svg?logo=discord&logoColor=white)](https://github.com/serenity-rs/serenity)
+[![Docker](https://img.shields.io/badge/container-docker-2496ED.svg?logo=docker&logoColor=white)](Dockerfile)
+[![Platform: Linux](https://img.shields.io/badge/platform-linux-lightgrey.svg?logo=linux&logoColor=white)](#)
+[![Code style: rustfmt](https://img.shields.io/badge/code%20style-rustfmt-1f425f.svg)](https://github.com/rust-lang/rustfmt)
+[![Lints: clippy](https://img.shields.io/badge/lints-clippy-yellowgreen.svg)](https://github.com/rust-lang/rust-clippy)
+[![GitHub last commit](https://img.shields.io/github/last-commit/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/commits/main)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/m/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/commits/main)
+[![GitHub issues](https://img.shields.io/github/issues/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/issues)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/pulls)
+[![GitHub stars](https://img.shields.io/github/stars/Cloud-SPE/livepeer-network-bot.svg?style=social)](https://github.com/Cloud-SPE/livepeer-network-bot/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/Cloud-SPE/livepeer-network-bot.svg?style=social)](https://github.com/Cloud-SPE/livepeer-network-bot/network/members)
+[![GitHub watchers](https://img.shields.io/github/watchers/Cloud-SPE/livepeer-network-bot.svg?style=social)](https://github.com/Cloud-SPE/livepeer-network-bot/watchers)
+[![Repo size](https://img.shields.io/github/repo-size/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot)
+[![Code size](https://img.shields.io/github/languages/code-size/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot)
+[![Top language](https://img.shields.io/github/languages/top/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot)
+[![Languages](https://img.shields.io/github/languages/count/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot)
+[![Contributors](https://img.shields.io/github/contributors/Cloud-SPE/livepeer-network-bot.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/graphs/contributors)
+[![Maintenance](https://img.shields.io/maintenance/yes/2026.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/commits/main)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/Cloud-SPE/livepeer-network-bot/pulls)
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://www.conventionalcommits.org)
+[![Livepeer](https://img.shields.io/badge/network-Livepeer-00EB88.svg)](https://livepeer.org/)
+
 Rust service that watches the Livepeer protocol explorer API, persists event state in SQLite, and delivers Discord notifications.
 
 The app has two deployment shapes:
@@ -160,3 +191,7 @@ The process exits on `SIGINT`/`SIGTERM` or when a spawned task dies unexpectedly
 - Operating rules: [docs/design-docs/core-beliefs.md](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/docs/design-docs/core-beliefs.md)
 - Embed contract: [docs/product-specs/messages.md](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/docs/product-specs/messages.md)
 - Upstream API contract input: [docs/generated/openapi.json](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/docs/generated/openapi.json)
+
+## License
+
+Licensed under the [MIT License](LICENSE).
