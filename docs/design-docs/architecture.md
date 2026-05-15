@@ -2,74 +2,477 @@
 
 ## One-paragraph summary
 
-A single Rust binary runs three concurrent scheduler loops:
+`livepeer-payout-bot` is a single Rust process that polls the Livepeer protocol explorer REST API, stores cursors and delivery state in SQLite, and sends Discord notifications. In its base shape it posts public webhook digests for `WinningTicketRedeemed` events plus daily/weekly/monthly network summaries. When `COMMANDS_ENABLED=true`, it also opens a Discord gateway connection, serves slash commands, stores user subscriptions, seeds delegator history, and delivers subscriber DMs for `Reward`, `Bond`, `Unbond`, and `Rebond` activity.
 
-1. **Event poller** — queries `GET /api/v1/events?event_name=WinningTicketRedeemed&with_valuations=true&cursor=…` against the Livepeer protocol explorer, persists new event rows into SQLite, advances the cursor watermark. Never posts to Discord.
-2. **Digest poster** — on wall-clock N-minute boundaries (default every 15 minutes), reads oldest unposted events from SQLite up to a bounded per-run cap, groups by orchestrator + job type (AI / transcoding), enriches with `/orchestrators/{address}` and `/gateways/{address}/profile` lookups, sorts the concrete outgoing messages by effective embed timestamp ascending (oldest first), and POSTs them to a Discord webhook. Marks events as posted.
-3. **Summary poster** — at daily / weekly / monthly boundaries, reads `/payouts/summary/{period}/{date}` for network totals plus `/payouts/leaderboard?from=…&to=…&limit=10` for the per-orch top-10 and posts the summary embed. Watermarks prevent double-posting.
+## Architectural goals
 
-All three loops share an `Arc<AppState>` that holds typed providers (HTTP client, Discord notifier, SQLite pool, clock). They never call each other.
+- Keep upstream integration narrow: one explorer REST API contract, one SQLite file, one Discord surface.
+- Preserve deterministic delivery semantics: persist first, mark sent after successful delivery.
+- Make boundaries explicit and typed so contract drift fails in code review and tests, not at runtime.
+- Keep deployment simple: one binary, no external scheduler, no separate database service.
+- Allow the slash-command/DM feature set without contaminating the webhook-only core.
 
-## Locked decisions
+## System context
 
-| Decision | Choice | Rationale |
+```mermaid
+flowchart LR
+    Explorer["Livepeer protocol explorer API"]
+    Bot["livepeer-payout-bot"]
+    Sqlite[("SQLite")]
+    Webhook["Discord webhook"]
+    Gateway["Discord gateway + bot HTTP API"]
+    Users["Discord users"]
+
+    Explorer --> Bot
+    Bot <--> Sqlite
+    Bot --> Webhook
+    Bot <--> Gateway
+    Gateway --> Users
+```
+
+## Deployment modes
+
+### 1. Webhook-only mode
+
+Enabled when `COMMANDS_ENABLED=false`.
+
+Long-lived tasks:
+
+- `event_poller`
+- `digest_poster`
+- `summary_poster`
+
+Used for public-channel reporting only.
+
+### 2. Commands-enabled mode
+
+Enabled when `COMMANDS_ENABLED=true`.
+
+Includes everything from webhook-only mode, plus:
+
+- startup seeding of `delegator_history`
+- Discord gateway runtime for slash commands
+- `reward_poller`
+- `delegator_poller`
+- `subscriber_digest_poster`
+
+Used for interactive subscriptions and direct-message fan-out.
+
+## Component model
+
+```mermaid
+flowchart TD
+    subgraph Process["Single Tokio process"]
+        Main["main.rs\nbootstrap + tracing"]
+        Runtime["runtime.rs\nobject graph + task spawning"]
+        Config["config.rs\nenv parsing"]
+
+        subgraph Providers["providers/"]
+            Http["http.rs\nreqwest::Client"]
+            Db["database.rs\nSQLite pool + migrations"]
+            Webhook["discord.rs\nwebhook notifier"]
+            Dm["discord_bot.rs\nDM sender"]
+            Gateway["discord_gateway.rs\npoise + serenity runtime"]
+        end
+
+        subgraph Domains["domains/"]
+            Explorer["explorer/\ntyped API client"]
+            State["state/\npublic state repos"]
+            Subs["subscriptions/\nsubscription repo"]
+            Notify["notify/\nembed + DM builders"]
+            Sched["scheduler/\npollers + posters"]
+            Commands["commands/\nslash handlers"]
+        end
+
+        Seed["seed.rs\ncross-domain seeding"]
+    end
+
+    Main --> Config
+    Main --> Runtime
+    Runtime --> Http
+    Runtime --> Db
+    Runtime --> Webhook
+    Runtime --> Dm
+    Runtime --> Gateway
+    Runtime --> Explorer
+    Runtime --> State
+    Runtime --> Subs
+    Runtime --> Sched
+    Runtime --> Commands
+    Runtime --> Seed
+    Sched --> Notify
+    Commands --> Seed
+```
+
+## Domain layering and dependency rules
+
+The repo does not use unconstrained “feature modules.” It uses stratified domains with specific import rules.
+
+| Layer | Modules | Allowed cross-domain imports |
 |---|---|---|
-| Language | Rust 1.95, single binary | Matches the rest of the Livepeer ecosystem; backend-rs code can be ported directly. |
-| Data source | `livepeer-protocol-explorer` REST API only | No chain access, no subgraph. Single upstream contract. |
-| Boundary types | Hand-written serde structs in `src/domains/explorer/types.rs`; `progenitor` codegen tracked separately | See `docs/exec-plans/active/002-progenitor-codegen.md`. Spec lives at `docs/generated/openapi.json`. |
-| State store | SQLite via `sqlx`, file path from `DATABASE_URL` | Embedded, zero-ops, survives restarts, queryable for dedup. |
-| Discord | Webhook only, raw `reqwest::Client` POST, behind a `Notifier` trait | Mirrors backend-rs. No gateway connection, no bot account. Trait keeps a future serenity bot pluggable. |
-| Scope | All orchestrators network-wide | Single webhook target. No per-tenant config. |
-| Scheduler | Three `tokio::time::interval` loops in one process | No host cron. Intervals internal. Graceful shutdown via `tokio::signal::ctrl_c`. |
-| Logging | `tracing` + JSON formatter, level from `LOG_LEVEL` | Structured by default. |
-| Migrations | `sqlx::migrate!` runs at startup, append-only | One source of truth for schema. |
+| Strict leaves | `explorer`, `subscriptions` | none |
+| Persistence | `state` | `explorer::types` only |
+| Formatters | `notify` | typed leaves as input |
+| Composers | `scheduler`, `commands` | any domain as needed |
+| Crate-root orchestration | `runtime.rs`, `seed.rs` | cross-domain composition |
 
-## Dependency direction
+Mechanical enforcement:
 
-Inside each domain, code can only depend "forward" through:
+- `tests/architecture.rs` fails if strict-leaf domains import another domain.
+- `tests/architecture.rs` fails if `state` imports anything beyond `explorer::types`.
 
-```
-types → repo → service
-```
+This split is deliberate:
 
-`types` are pure serde structs with no I/O dependencies. `repo` owns SQL or HTTP calls. `service` orchestrates `repo` calls into business operations.
+- `explorer` owns the upstream REST contract.
+- `state` owns durable local state for public polling and summaries.
+- `subscriptions` owns subscriber rows and DM failure counters.
+- `notify` owns presentation contracts.
+- `scheduler` owns background workflows.
+- `commands` owns request/response style user interaction.
+- `seed.rs` handles orchestration that crosses persistence domains but does not fit a single background loop.
 
-Cross-cutting concerns (HTTP client construction, Discord webhook, clock, DB pool) live in `src/providers/` and are passed into domains via constructor injection. **Domains never import each other.** Composition happens exclusively in `src/runtime.rs`.
+## Repository layout and responsibility map
 
-This is mechanically checkable by reading the `mod.rs` files. A future task adds a structural test (`tests/architecture.rs`) that fails CI if a domain imports another.
-
-## Embed-to-API field map
-
-The Discord embeds are byte-for-byte copies of the `livepeer-backend-rs` originals. The mapping from backend-rs's internal `Ticket` model to the explorer API:
-
-| Embed field (backend-rs name) | Explorer API source |
+| Path | Responsibility |
 |---|---|
-| `t.recipient_id` | event `to_address` |
-| `t.sender_id` | event `from_address` |
-| `t.face_value` (ETH, f64) | parse(event `amount_native`) |
-| `t.face_value_usd` | parse(event `valuations[0].amount_usd`) |
-| `t.eth_price` | parse(event `valuations[0].native_usd_price`) |
-| `t.transaction_id` | event `tx_hash` |
-| `t.timestamp` | event `block_timestamp` |
-| `t.fee_cut` | parse(`GET /orchestrators/{to_address}.fee_cut_percent`) / 100 |
-| `t.orch_commission` | derived `face_value * fee_cut` |
-| `t.orch_commission_usd` | derived `face_value_usd * fee_cut` |
-| `orch.name` | `GET /orchestrators/{to_address}.display_name` |
-| `orch.avatar` | `GET /orchestrators/{to_address}.avatar_url` |
-| `broadcaster.name` | `GET /gateways/{from_address}/profile.display_name` |
-| `is_ai_job(broadcaster)` | `GET /gateways/{from_address}/profile.kind == "ai"` |
-| 24h rolling totals | SQL aggregate over local `events` table |
-| Summary `report.total_ticket` | `GET /payouts/summary/{period}/{date}.ticket_count` |
-| Summary `report.total_eth` | `summary.sum_face_value_native` |
-| Summary `report.total_orch_commission_eth` | `summary.sum_commission_native` |
-| Summary top-10 rows | `GET /payouts/leaderboard?from=…&to=…&limit=10` |
+| `src/main.rs` | loads `.env`, configures JSON tracing, parses config, enters runtime |
+| `src/config.rs` | parses env vars once and fails on invalid input |
+| `src/runtime.rs` | constructs providers/repos/clients and spawns all Tokio tasks |
+| `src/seed.rs` | idempotent cold-start and per-subscribe seeding of delegator history |
+| `src/providers/http.rs` | shared `reqwest::Client` |
+| `src/providers/database.rs` | opens SQLite, enables WAL, runs migrations |
+| `src/providers/discord.rs` | webhook sender with rate-limit awareness and retries |
+| `src/providers/discord_bot.rs` | bot-authenticated DM sender |
+| `src/providers/discord_gateway.rs` | `poise` / `serenity` gateway runtime and command registration |
+| `src/domains/explorer/` | generated API types and typed client methods |
+| `src/domains/state/` | repos for `events`, `cursors`, `summary_watermarks`, stream tables |
+| `src/domains/subscriptions/` | repo for `subscriptions` table |
+| `src/domains/notify/` | webhook embed builders and DM message builders |
+| `src/domains/scheduler/` | recurring pollers and posters |
+| `src/domains/commands/` | slash command handlers |
+| `migrations/` | append-only SQLite schema history |
+| `tests/embeds.rs` | snapshot tests for output contracts |
+| `tests/architecture.rs` | structural architecture checks |
 
-## Known limitations
+## Runtime startup flow
 
-- **Historical fee_cut.** We use the orchestrator's *current* `fee_cut_percent`. For a 15-minute digest window this is effectively the same value, but it can drift if an orchestrator updates their fee cut between ticket redemption and digest post. Acceptable for v1; revisit if the explorer adds `as_of_block` to the orchestrator endpoint.
-- **Discord rate limiting** is bucket-aware: `providers/discord.rs` reads `x-ratelimit-remaining`, `x-ratelimit-reset-after`, and `x-ratelimit-scope` on every response and respects them on the next send. Bounded 3-attempt retry on 429; non-429 4xx/5xx return Err and events stay `sent_to_discord=0` to be re-attempted on the next window. Open items in `docs/exec-plans/active/003-discord-rate-limiting.md`.
-- **No per-tenant config.** One webhook URL, one set of intervals. Multi-tenant is out of scope for v1.
+```mermaid
+sequenceDiagram
+    participant OS as Process start
+    participant Main as main.rs
+    participant Config as Config::from_env
+    participant HTTP as providers/http
+    participant DB as providers/database
+    participant Runtime as runtime.rs
+    participant Tasks as Tokio tasks
 
-## Performance posture
+    OS->>Main: launch binary
+    Main->>Main: load .env and init tracing
+    Main->>Config: parse env vars
+    Config-->>Main: Config
+    Main->>Runtime: run(config)
+    Runtime->>HTTP: build reqwest client
+    Runtime->>DB: open SQLite + run migrations
+    Runtime->>Runtime: construct clients/repos/providers
+    Runtime->>Tasks: spawn always-on schedulers
+    alt COMMANDS_ENABLED=true
+        Runtime->>Runtime: seed delegator history
+        Runtime->>Tasks: spawn reward/delegator/subscriber tasks
+        Runtime->>Tasks: spawn Discord gateway runtime
+    end
+    Runtime->>Runtime: wait for ctrl-c or unexpected task exit
+```
 
-The bot's working set is tiny: a few hundred winning tickets per day at most, a handful of gateways, ~100 orchestrators. Caching `/orchestrators/{address}` and `/gateways/{address}/profile` responses in memory with a 5-minute TTL is sufficient. No connection pool tuning needed beyond `reqwest` defaults. SQLite's WAL mode is enabled by the migration.
+## Data flow by feature
+
+### Public payout digests
+
+`WinningTicketRedeemed` is the primary public event stream.
+
+```mermaid
+sequenceDiagram
+    participant Poller as event_poller
+    participant Explorer as Explorer API
+    participant State as SqliteStateRepo
+    participant Poster as digest_poster
+    participant Notify as notify/embed
+    participant Discord as Discord webhook
+
+    loop every EVENT_POLL_INTERVAL_SECS
+        Poller->>State: read cursor(events:WinningTicketRedeemed)
+        Poller->>Explorer: GET /api/v1/events?event_name=WinningTicketRedeemed
+        Explorer-->>Poller: typed EventRow page
+        Poller->>State: INSERT OR IGNORE events
+        Poller->>State: advance cursor
+    end
+
+    loop every digest boundary
+        Poster->>State: fetch unsent events
+        Poster->>Explorer: fetch orchestrator + gateway profiles
+        Poster->>Notify: build single-ticket or grouped digest embeds
+        Notify-->>Poster: JSON payload
+        Poster->>Discord: POST webhook
+        alt 2xx
+            Poster->>State: mark sent_to_discord=1
+        else failure
+            Poster->>Poster: leave rows pending for retry
+        end
+    end
+```
+
+Important semantics:
+
+- Ingestion and posting are decoupled by SQLite.
+- Events are inserted before they become eligible to post.
+- A failed webhook send does not lose data; the rows remain pending.
+- Digest grouping is by orchestrator and job type (`ai` vs non-`ai` gateway).
+
+### Network summaries
+
+```mermaid
+sequenceDiagram
+    participant Summary as summary_poster
+    participant State as SqliteStateRepo
+    participant Explorer as Explorer API
+    participant Notify as notify/embed
+    participant Discord as Discord webhook
+
+    loop every SUMMARY_POLL_INTERVAL_SECS
+        Summary->>Summary: compute last closed daily/weekly/monthly periods
+        Summary->>State: check summary_watermarks
+        alt not yet posted
+            Summary->>Explorer: GET /payouts/summary/{period}/{date}
+            Summary->>Explorer: GET /payouts/leaderboard
+            Summary->>Notify: build summary embed
+            Summary->>Discord: POST webhook
+            Summary->>State: insert summary watermark
+        end
+    end
+```
+
+Important semantics:
+
+- Summaries always cover the last fully closed UTC period.
+- Watermarks prevent duplicate daily/weekly/monthly posts across restarts.
+
+### Subscription commands and DM delivery
+
+Commands mode introduces two independent but related flows: command handling and background DM delivery.
+
+#### Slash commands
+
+```mermaid
+sequenceDiagram
+    participant User as Discord user
+    participant Gateway as discord_gateway
+    participant Cmd as commands/*
+    participant Explorer as Explorer API
+    participant Subs as SqliteSubscriptionsRepo
+    participant Seed as seed.rs
+    participant Streams as EventStreamsRepo
+
+    User->>Gateway: /subscribe 0x...
+    Gateway->>Cmd: invoke handler
+    Cmd->>Explorer: validate orchestrator exists
+    Cmd->>Subs: INSERT OR IGNORE subscription
+    alt new subscription
+        Cmd->>Seed: seed_one(orch)
+        Seed->>Explorer: list orchestrator delegators
+        Seed->>Streams: record first-seen delegators
+    end
+    Cmd-->>User: ephemeral success/error embed
+```
+
+Command surface today:
+
+- `/subscribe`
+- `/unsubscribe`
+- `/subscriptions`
+- `/orchestrator delegators`
+- `/orchestrator rewards`
+- `/orchestrator tickets`
+
+#### Reward DMs
+
+```mermaid
+sequenceDiagram
+    participant Reward as reward_poller
+    participant Explorer as Explorer API
+    participant State as SqliteStateRepo
+    participant Streams as EventStreamsRepo
+    participant Subs as SqliteSubscriptionsRepo
+    participant DM as BotDmSender
+    participant User as Subscriber
+
+    loop every REWARD_POLL_INTERVAL_SECS
+        Reward->>State: read cursor(events:Reward)
+        Reward->>Explorer: list Reward events
+        Reward->>Streams: insert reward_events
+        Reward->>State: advance cursor
+        Reward->>Streams: fetch unsent reward_events
+        Reward->>Subs: find subscribers by orch
+        Reward->>Explorer: get orchestrator profile
+        Reward->>DM: send per-event DM
+        DM-->>User: Discord DM
+        Reward->>Subs: clear or increment dm_failure_count
+        Reward->>Streams: mark reward event sent
+    end
+```
+
+#### Delegator activity DMs
+
+```mermaid
+sequenceDiagram
+    participant Poller as delegator_poller
+    participant Digest as subscriber_digest_poster
+    participant Explorer as Explorer API
+    participant State as SqliteStateRepo
+    participant Streams as EventStreamsRepo
+    participant Subs as SqliteSubscriptionsRepo
+    participant DM as BotDmSender
+
+    loop every DELEGATOR_POLL_INTERVAL_SECS
+        Poller->>State: read cursor per event name
+        Poller->>Explorer: list Bond / Unbond / Rebond events
+        Poller->>Streams: insert delegator_events
+        opt new Bond
+            Poller->>Streams: record_first_seen(delegator, orch)
+        end
+        Poller->>State: advance cursor
+    end
+
+    loop every SUBSCRIBER_DIGEST_INTERVAL_SECS
+        Digest->>Streams: fetch unsent delegator_events
+        Digest->>Subs: find subscribers by orch
+        Digest->>Streams: classify new bond vs stake change
+        Digest->>Explorer: get orchestrator profile
+        Digest->>DM: send grouped DM per user + orch
+        Digest->>Subs: clear or increment dm_failure_count
+        Digest->>Streams: mark delegator events sent
+    end
+```
+
+Important semantics:
+
+- DM flows do not reuse the webhook sender; they use a bot-authenticated Discord HTTP client.
+- Auto-unsubscribe is driven by consecutive DM `403` failures.
+- Transient DM failures are logged but do not cause per-event replay, which avoids duplicate delivery to users who already received the message.
+
+## Persistence model
+
+### Tables
+
+| Table | Purpose |
+|---|---|
+| `events` | persisted `WinningTicketRedeemed` rows plus webhook sent watermark |
+| `cursors` | named opaque explorer cursors for pollers |
+| `summary_watermarks` | one row per posted closed period |
+| `subscriptions` | `(discord_user_id, orchestrator_address)` pairs and DM failure counters |
+| `reward_events` | persisted `Reward` events with DM sent watermark |
+| `delegator_events` | persisted `Bond`/`Unbond`/`Rebond` events with DM sent watermark |
+| `delegator_history` | first-seen marker for `(delegator, orch)` |
+
+### Why SQLite
+
+- Embedded and operationally simple.
+- Strong enough for the small event volume.
+- Supports idempotent inserts, cursors, and queryable local state.
+- WAL mode is enabled at open time for better concurrent reader/writer behavior.
+
+### Persistence invariants
+
+- Pollers use `INSERT OR IGNORE` for deduplication.
+- Cursors advance only after the current page has been persisted.
+- Public webhook rows are marked sent only after a successful 2xx webhook response.
+- Summary posts are de-duplicated by `(period, period_date)`.
+- DM stream events are marked sent after delivery attempts for the relevant subscriber set are complete.
+
+## Upstream API boundary
+
+The explorer API is the only upstream domain source.
+
+Boundary rules:
+
+- Generated OpenAPI-backed types are re-exported from `src/domains/explorer/types.rs`.
+- Internal code consumes typed structs, not raw `serde_json::Value`.
+- Helper enums and traits that do not exist in the OpenAPI contract, like `Cadence` and `GatewayProfileRowExt`, live alongside the re-exports.
+
+Explorer endpoints used today:
+
+- `GET /api/v1/events` for `WinningTicketRedeemed`, `Reward`, `Bond`, `Unbond`, `Rebond`
+- `GET /api/v1/orchestrators/{address}`
+- `GET /api/v1/orchestrators/{address}/delegators`
+- `GET /api/v1/gateways/{address}/profile`
+- `GET /api/v1/payouts/summary/{period}/{date}`
+- `GET /api/v1/payouts/leaderboard`
+- `GET /api/v1/rewards/leaderboard`
+
+## Discord boundary
+
+Two delivery channels exist on purpose.
+
+### Webhook delivery
+
+Used for public digest and summary embeds.
+
+- Implemented in `src/providers/discord.rs`
+- Shared `reqwest::Client`
+- Bucket-aware rate limiting based on Discord response headers
+- Retries bounded 429s and 5xx responses
+- Leaves state pending on failure so the next poster run can retry
+
+### Bot-authenticated delivery
+
+Used for DMs and slash commands.
+
+- `src/providers/discord_bot.rs` wraps `serenity::Http` for DMs
+- `src/providers/discord_gateway.rs` owns the `poise` framework and gateway connection
+- Command registration can be global or guild-scoped depending on `DISCORD_GUILD_ID`
+
+## Output contracts
+
+Message payloads are treated as product contracts, not incidental formatting.
+
+- Public webhook embeds are built in `src/domains/notify/embed.rs`.
+- DM payloads are built in `src/domains/notify/dm.rs`.
+- Expected JSON lives in [../product-specs/messages.md](../product-specs/messages.md).
+- `tests/embeds.rs` snapshot-tests the exact output shape.
+
+## Configuration model
+
+`src/config.rs` is the only place that reads environment variables.
+
+Properties:
+
+- required values fail fast with descriptive errors
+- durations are parsed once into `std::time::Duration`
+- command-mode config is grouped into `CommandsConfig`
+- empty or invalid optional command values still fail when commands mode is enabled
+
+This keeps “what environment is required to boot” explicit and testable.
+
+## Failure handling and restart posture
+
+- Invalid config: process exits during boot.
+- Migration failure: process exits during boot.
+- Explorer/API errors during scheduled work: iteration logs error; next tick retries.
+- Webhook send failure: rows remain unsent and are retried later.
+- DM `403`: increments failure counter and can auto-unsubscribe.
+- DM transient failure: logged, event still considered attempted to avoid duplicate sends.
+- Unexpected background task exit: `runtime.rs` logs the exit and shuts the process down rather than limping in an unknown partial state.
+
+## Known tradeoffs
+
+- `WinningTicketRedeemed` commission calculations use the orchestrator’s current `fee_cut_percent`, not a historical point-in-time value.
+- DM delivery favors “no duplicate spam” over “perfect at-least-once replay” for transient subscriber-specific failures.
+- The process is intentionally single-binary and single-DB; multi-tenant routing and horizontal sharding are out of scope.
+- The commands-enabled runtime broadens the product beyond the original three-loop webhook bot, so docs and architecture tests need to stay current as features land.
+
+## What to update before changing architecture
+
+If a change alters runtime boundaries or responsibilities, update these docs in the same PR:
+
+- `docs/design-docs/architecture.md`
+- `docs/design-docs/core-beliefs.md` if the rule set changes
+- `README.md` if setup, modes, or top-level features change
+- `AGENTS.md` if the repo map or “what this project is” summary changes

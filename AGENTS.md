@@ -4,7 +4,19 @@ This is the **map** of the repository. It is intentionally short. Deeper context
 
 ## What this project is
 
-A Rust binary that polls the Livepeer protocol explorer REST API for `WinningTicketRedeemed` events, persists a small amount of state in SQLite, and posts Discord webhook messages — both per-orchestrator digests and periodic network summaries.
+A Rust binary that consumes the Livepeer protocol explorer REST API, persists event and subscription state in SQLite, and sends Discord notifications.
+
+Base mode posts public webhook messages for:
+
+- per-orchestrator `WinningTicketRedeemed` digests
+- daily / weekly / monthly network summaries
+
+Optional commands mode also enables:
+
+- slash commands for subscribing to orchestrators
+- reward DMs to subscribers
+- delegator-activity digest DMs
+- Discord gateway connectivity for the bot user
 
 ## Where to read next
 
@@ -24,24 +36,30 @@ A Rust binary that polls the Livepeer protocol explorer REST API for `WinningTic
 ├── AGENTS.md                  # this file — map only
 ├── Cargo.toml                 # single binary, pinned deps
 ├── rust-toolchain.toml        # pinned channel
+├── Dockerfile                 # container build
 ├── docs/
 │   ├── design-docs/           # system of record for "why"
 │   ├── exec-plans/            # active/completed work plans
 │   ├── product-specs/         # what we ship (embed templates)
 │   ├── generated/             # vendored artifacts (openapi.json)
 │   └── references/            # external reading
+├── infra/                     # container/runtime helpers
 ├── migrations/                # SQLite schema, applied at startup
 ├── ops/                       # SQL run against external systems
 ├── src/
 │   ├── main.rs                # wiring only
+│   ├── lib.rs                 # crate exports
 │   ├── config.rs              # boundary parse of env vars
 │   ├── runtime.rs             # composes domains, spawns loops
+│   ├── seed.rs                # cross-domain delegator-history seeding
 │   ├── providers/             # cross-cutting: http, discord, db, clock
 │   └── domains/
 │       ├── explorer/          # types, client, service
 │       ├── state/             # sqlite repo + service
+│       ├── subscriptions/     # subscriber persistence
 │       ├── notify/            # Notifier trait, embed builders
-│       └── scheduler/         # event_poller, digest_poster, summary_poster
+│       ├── scheduler/         # pollers and posters
+│       └── commands/          # slash command handlers
 └── tests/                     # integration + drift tests
 ```
 
@@ -50,10 +68,10 @@ A Rust binary that polls the Livepeer protocol explorer REST API for `WinningTic
 Per `docs/design-docs/architecture.md`, modules depend strictly downward through:
 
 ```
-Types → Config → Repo → Service → Runtime
+Types → Repo → Service → Runtime
 ```
 
-Cross-cutting concerns (HTTP client, Discord webhook, clock, DB pool) enter every domain through `providers/` only. A domain never imports another domain directly — composition happens in `src/runtime.rs`.
+Cross-cutting concerns (HTTP client, Discord webhook, Discord bot HTTP client, gateway runtime, clock, DB pool) enter every domain through `providers/` only. Domain coupling rules are enforced mechanically by `tests/architecture.rs`, and cross-domain composition belongs in `src/runtime.rs` or crate-root helpers like `src/seed.rs`.
 
 If you need to add a new behavior that doesn't fit, **stop and update `docs/design-docs/architecture.md` first**.
 
