@@ -1,31 +1,43 @@
-//! Discord webhook client with bucket-aware rate limiting.
+//! Discord webhook client with bucket-aware rate limiting + bounded 5xx
+//! retry + structured metrics.
 //!
-//! Implements the `Notifier` port defined in `domains::notify::service`.
-//! Honors the following headers on every response:
+//! Honors the following response headers on every send:
 //!
 //!   x-ratelimit-remaining     (i64)  — capacity left in the current bucket
 //!   x-ratelimit-reset-after   (f64)  — seconds until the bucket refills
 //!   x-ratelimit-scope         (str)  — "user" | "shared" | "global" on 429s
 //!   retry-after               (f64)  — seconds to wait, on 429s
 //!
-//! And the 429 JSON body fields `retry_after` (preferred over header when
-//! present) and `global`.
+//! Plus the 429 JSON body fields `retry_after` (preferred over header when
+//! present) and `global` (treated as a global-scope 429).
 //!
-//! All sends through a single `DiscordWebhook` are serialized by a tokio
-//! `Mutex`. Concurrency was never required — the digest poster and summary
-//! poster each invoke `send` from their own tokio task but the volume is low,
-//! and serializing keeps bucket math race-free.
+//! Retry policy:
+//!   2xx                       → return Ok immediately
+//!   429 (per-route or global) → respect the wait, retry up to MAX_ATTEMPTS
+//!   5xx                       → exponential backoff (base 1s, cap 30s),
+//!                               retry up to MAX_ATTEMPTS
+//!   other 4xx (400/403/404…)  → return Err with no retry
+//!
+//! Metrics are emitted as `tracing::info!`/`warn!` events on the
+//! `discord_metrics` target. Stable message names + stable field names let
+//! log scrapers (Vector / Loki / promtail) derive counters and histograms
+//! without us adding a `/metrics` endpoint.
 
 use std::time::Duration;
 
 use reqwest::{header::HeaderMap, Client, StatusCode};
 use serde_json::Value;
-use tokio::{sync::Mutex, time::Instant};
+use tokio::{
+    sync::Mutex,
+    time::{Instant as TokioInstant, Instant},
+};
 use url::Url;
 
 use crate::domains::notify::service::Notifier;
 
 const MAX_ATTEMPTS: u32 = 3;
+const BACKOFF_BASE_MS: u64 = 1000;
+const BACKOFF_CAP_MS: u64 = 30_000;
 
 pub struct DiscordWebhook {
     client: Client,
@@ -64,12 +76,14 @@ impl Notifier for DiscordWebhook {
             for attempt in 1..=MAX_ATTEMPTS {
                 wait_for_gate(&mut state).await;
 
+                let started = TokioInstant::now();
                 let resp = self
                     .client
                     .post(self.webhook_url.clone())
                     .json(&payload)
                     .send()
                     .await?;
+                let duration_ms = started.elapsed().as_millis() as u64;
 
                 let status = resp.status();
                 let headers = resp.headers().clone();
@@ -91,6 +105,14 @@ impl Notifier for DiscordWebhook {
                     }
                 }
 
+                tracing::info!(
+                    target: "discord_metrics",
+                    status = status.as_u16(),
+                    attempt,
+                    duration_ms,
+                    "send_completed"
+                );
+
                 if status.is_success() {
                     return Ok(());
                 }
@@ -108,16 +130,38 @@ impl Notifier for DiscordWebhook {
                     state.gate = Some(Instant::now() + Duration::from_secs_f64(wait_secs));
 
                     tracing::warn!(
+                        target: "discord_metrics",
                         attempt,
                         wait_secs,
                         is_global,
                         scope = ?header_scope,
-                        "discord 429 — pausing"
+                        "ratelimited"
                     );
 
                     if attempt == MAX_ATTEMPTS {
                         return Err(anyhow::anyhow!(
                             "discord 429 after {MAX_ATTEMPTS} attempts (global={is_global})"
+                        ));
+                    }
+                    continue;
+                }
+
+                if status.is_server_error() {
+                    let backoff_ms = (BACKOFF_BASE_MS << (attempt - 1)).min(BACKOFF_CAP_MS);
+                    state.gate = Some(Instant::now() + Duration::from_millis(backoff_ms));
+
+                    tracing::warn!(
+                        target: "discord_metrics",
+                        status = status.as_u16(),
+                        attempt,
+                        backoff_ms,
+                        "server_error_retry"
+                    );
+
+                    if attempt == MAX_ATTEMPTS {
+                        let body = resp.text().await.unwrap_or_default();
+                        return Err(anyhow::anyhow!(
+                            "discord {status} after {MAX_ATTEMPTS} attempts: {body}"
                         ));
                     }
                     continue;
@@ -139,7 +183,12 @@ async fn wait_for_gate(state: &mut BucketState) {
         let now = Instant::now();
         if t > now {
             let wait = t - now;
-            tracing::debug!(?wait, "discord rate-limit pause");
+            let wait_ms = wait.as_millis() as u64;
+            tracing::info!(
+                target: "discord_metrics",
+                wait_ms,
+                "gate_wait"
+            );
             tokio::time::sleep(wait).await;
         }
     }

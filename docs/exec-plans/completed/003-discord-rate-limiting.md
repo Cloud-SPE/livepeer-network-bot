@@ -21,13 +21,16 @@
   - Updates the gate and retries, up to `MAX_ATTEMPTS = 3`. After the cap, returns Err and the caller defers to the next polling window (events stay `sent_to_discord=0`, so the same payload retries on the next 15-min tick with whatever extra tickets accumulated — no duplicate posts).
 - The previous unconditional 500 ms post-send sleep is gone. Bucket math is the only thing pacing us now.
 
-## What's still missing
+## Follow-ups landed in this plan
 
-- **Per-webhook buckets.** We have one webhook URL today. If the bot ever fans out to multiple URLs (per-channel routing, per-orchestrator subscriptions), the bucket state should be keyed by `x-ratelimit-bucket` (or by URL as a coarser proxy) instead of one mutex per `DiscordWebhook` instance. Today this is trivial — each instance has its own state — but if we ever share buckets across "shared" routes we'd need a coordinator.
-- **Cross-process coordination.** If we ever run multiple bot replicas pointed at the same webhook (HA, blue/green), each replica computes bucket state independently and they'll trip 429s on each other. Out of scope until we actually need replicas.
-- **Metrics.** Emit Prometheus counters: `discord_send_total{status}`, `discord_429_total{scope}`, histogram for `wait_for_gate` durations. Owners want to see when the limiter is actually pausing.
-- **Invalid Request quota awareness.** Discord bans the IP for 1 hour at 10 000 4xx/429 in 10 minutes. Add a circuit-breaker that pauses all sends if non-429 4xx rate exceeds a threshold. Low risk today but cheap insurance.
-- **5xx retry.** Currently any 5xx returns Err immediately. Could add 1-shot retry with backoff. Defer.
+- ✅ **5xx retry.** Bounded retry loop with exponential backoff (base 1 s, cap 30 s, max 3 attempts).
+- ✅ **Metrics.** Structured `tracing` events on the `discord_metrics` target with stable message names (`send_completed`, `gate_wait`, `ratelimited`, `server_error_retry`) and stable field names. Scrapers (Vector / Loki / promtail) can derive counters and histograms without us standing up a `/metrics` endpoint. Adding Prometheus directly is deferred until someone actually wants pull-based scraping.
+
+## Remaining limitations (out of scope, documented for future readers)
+
+- **Per-webhook buckets.** Today's `DiscordWebhook` has one mutex; a future multi-webhook deploy should key bucket state by `x-ratelimit-bucket` or URL.
+- **Cross-process coordination.** Multiple bot replicas pointed at the same webhook would trip 429s on each other. Out of scope until we run replicas.
+- **Invalid Request quota circuit-breaker.** Discord bans the IP at 10 000 4xx/429 in 10 minutes. We currently log + return Err. Add a circuit-breaker if abuse becomes a real risk.
 
 ## Where to read
 
