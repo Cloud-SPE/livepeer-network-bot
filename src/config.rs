@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use url::Url;
 
@@ -10,6 +10,11 @@ pub struct Config {
     pub event_poll_interval: Duration,
     pub digest_window: Duration,
     pub digest_fetch_limit: u32,
+    /// When `false`, nothing is sent to `discord_webhook_url`: neither the
+    /// per-orchestrator ticket digests nor the daily/weekly/monthly
+    /// summaries are spawned. Used in dev to share a webhook URL with prod
+    /// without double-posting. Events still poll and persist.
+    pub webhook_post_enabled: bool,
     pub summary_poll_interval: Duration,
     pub reward_poll_interval: Duration,
     pub delegator_poll_interval: Duration,
@@ -51,10 +56,12 @@ impl Config {
         let discord_webhook_url = url_var("DISCORD_WEBHOOK_URL")?;
         let database_url =
             std::env::var("DATABASE_URL").map_err(|_| ConfigError::Missing("DATABASE_URL"))?;
+        validate_database_url(&database_url, running_in_container())?;
 
         let event_poll_interval = secs_var("EVENT_POLL_INTERVAL_SECS", 60)?;
         let digest_window = secs_var("DIGEST_WINDOW_SECS", 15 * 60)?;
         let digest_fetch_limit = u32_var("DIGEST_FETCH_LIMIT", 500)?;
+        let webhook_post_enabled = bool_var("WEBHOOK_POST_ENABLED", true)?;
         let summary_poll_interval = secs_var("SUMMARY_POLL_INTERVAL_SECS", 60 * 60)?;
         let reward_poll_interval = secs_var("REWARD_POLL_INTERVAL_SECS", 60)?;
         let delegator_poll_interval = secs_var("DELEGATOR_POLL_INTERVAL_SECS", 60)?;
@@ -77,6 +84,7 @@ impl Config {
             event_poll_interval,
             digest_window,
             digest_fetch_limit,
+            webhook_post_enabled,
             summary_poll_interval,
             reward_poll_interval,
             delegator_poll_interval,
@@ -188,4 +196,51 @@ fn i64_var(name: &'static str, default: i64) -> Result<i64, ConfigError> {
             var: name,
             source: anyhow::Error::new(e),
         })
+}
+
+fn validate_database_url(database_url: &str, in_container: bool) -> Result<(), ConfigError> {
+    if !in_container || database_url == "sqlite::memory:" {
+        return Ok(());
+    }
+
+    let Some(path) = database_url.strip_prefix("sqlite://") else {
+        return Ok(());
+    };
+
+    if path.starts_with('/') {
+        return Ok(());
+    }
+
+    Err(ConfigError::Invalid {
+        var: "DATABASE_URL",
+        source: anyhow::anyhow!(
+            "containerized deploys must use an absolute SQLite path such as `sqlite:///data/livepeer-payout-bot.db`; relative paths like `{database_url}` are ephemeral inside the container"
+        ),
+    })
+}
+
+fn running_in_container() -> bool {
+    Path::new("/.dockerenv").exists() || std::env::var_os("container").is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_database_url;
+
+    #[test]
+    fn allows_relative_sqlite_path_outside_container() {
+        assert!(validate_database_url("sqlite://./livepeer-payout-bot.db", false).is_ok());
+    }
+
+    #[test]
+    fn rejects_relative_sqlite_path_inside_container() {
+        let err = validate_database_url("sqlite://./livepeer-payout-bot.db", true)
+            .expect_err("relative SQLite path should be rejected in containers");
+        assert_eq!(err.to_string(), "invalid value for DATABASE_URL: containerized deploys must use an absolute SQLite path such as `sqlite:///data/livepeer-payout-bot.db`; relative paths like `sqlite://./livepeer-payout-bot.db` are ephemeral inside the container");
+    }
+
+    #[test]
+    fn allows_absolute_sqlite_path_inside_container() {
+        assert!(validate_database_url("sqlite:///data/livepeer-payout-bot.db", true).is_ok());
+    }
 }

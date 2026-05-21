@@ -39,10 +39,16 @@ Enabled when `COMMANDS_ENABLED=false`.
 Long-lived tasks:
 
 - `event_poller`
-- `digest_poster`
-- `summary_poster`
+- `digest_poster` (only when `WEBHOOK_POST_ENABLED=true`)
+- `summary_poster` (only when `WEBHOOK_POST_ENABLED=true`)
 
 Used for public-channel reporting only.
+
+`WEBHOOK_POST_ENABLED` defaults to `true`. Setting it to `false` is a
+dev-side safety flag: events still poll and persist, but the digest and
+summary posters are not spawned, so nothing is sent to
+`DISCORD_WEBHOOK_URL`. The flag exists so a dev process can share a
+webhook URL with prod without double-posting.
 
 ### 2. Commands-enabled mode
 
@@ -180,7 +186,7 @@ sequenceDiagram
         Runtime->>Tasks: spawn reward/delegator/subscriber tasks
         Runtime->>Tasks: spawn Discord gateway runtime
     end
-    Runtime->>Runtime: wait for ctrl-c or unexpected task exit
+    Runtime->>Runtime: wait for ctrl-c or unexpected core-task exit
 ```
 
 ## Data flow by feature
@@ -459,7 +465,10 @@ This keeps “what environment is required to boot” explicit and testable.
 - Webhook send failure: rows remain unsent and are retried later.
 - DM `403`: increments failure counter and can auto-unsubscribe.
 - DM transient failure: logged, event still considered attempted to avoid duplicate sends.
-- Unexpected background task exit: `runtime.rs` logs the exit and shuts the process down rather than limping in an unknown partial state.
+- Unexpected exit of a core webhook task (`event_poller`, `digest_poster`, `summary_poster`): `runtime.rs` logs the exit and shuts the process down rather than limping in an unknown partial state.
+- Commands-only infrastructure failures (most notably the Discord gateway runtime): logged and restarted in-process so webhook digests and summaries keep flowing.
+- Containerized deploys must use an absolute SQLite path (for example `sqlite:///data/livepeer-payout-bot.db`) so the DB lives on the mounted volume instead of disappearing with the container filesystem.
+- `WEBHOOK_POST_ENABLED=false` skips spawning `digest_poster` and `summary_poster`; the `event_poller` keeps running so the queue drains automatically when the flag is flipped back to `true`.
 
 ## Known tradeoffs
 

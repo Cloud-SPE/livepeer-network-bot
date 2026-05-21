@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use tokio::signal;
+use tokio::time::{sleep, Duration as TokioDuration};
 
 use crate::{
     config::Config,
@@ -44,24 +45,30 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             event_poller::run(explorer, state, interval).await;
         });
     }
-    {
-        let explorer = explorer.clone();
-        let notifier = notifier.clone();
-        let state = state.clone();
-        let window = config.digest_window;
-        let fetch_limit = config.digest_fetch_limit;
-        tasks.spawn(async move {
-            digest_poster::run(explorer, notifier, state, window, fetch_limit).await;
-        });
-    }
-    {
-        let explorer = explorer.clone();
-        let notifier = notifier.clone();
-        let state = state.clone();
-        let interval = config.summary_poll_interval;
-        tasks.spawn(async move {
-            summary_poster::run(explorer, notifier, state, interval).await;
-        });
+    if config.webhook_post_enabled {
+        {
+            let explorer = explorer.clone();
+            let notifier = notifier.clone();
+            let state = state.clone();
+            let window = config.digest_window;
+            let fetch_limit = config.digest_fetch_limit;
+            tasks.spawn(async move {
+                digest_poster::run(explorer, notifier, state, window, fetch_limit).await;
+            });
+        }
+        {
+            let explorer = explorer.clone();
+            let notifier = notifier.clone();
+            let state = state.clone();
+            let interval = config.summary_poll_interval;
+            tasks.spawn(async move {
+                summary_poster::run(explorer, notifier, state, interval).await;
+            });
+        }
+    } else {
+        tracing::info!(
+            "webhook posts disabled (WEBHOOK_POST_ENABLED=false); ticket digests + summaries not spawned; events still poll and persist"
+        );
     }
 
     if let Some(commands) = config.commands.clone() {
@@ -91,7 +98,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let subscriptions = subscriptions.clone();
             let state = state.clone();
             let dm = dm.clone();
-            tasks.spawn(async move {
+            tokio::spawn(async move {
                 reward_poller::run(
                     explorer,
                     streams,
@@ -109,7 +116,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let explorer = explorer.clone();
             let streams = streams.clone();
             let state = state.clone();
-            tasks.spawn(async move {
+            tokio::spawn(async move {
                 delegator_poller::run(explorer, streams, state, delegator_interval).await;
             });
         }
@@ -120,7 +127,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let subscriptions = subscriptions.clone();
             let dm = dm.clone();
             let window = config.subscriber_digest_interval;
-            tasks.spawn(async move {
+            tokio::spawn(async move {
                 subscriber_digest_poster::run(
                     explorer,
                     streams,
@@ -137,17 +144,29 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let explorer = explorer.clone();
             let subscriptions = subscriptions.clone();
             let streams = streams.clone();
-            tasks.spawn(async move {
-                if let Err(err) =
-                    discord_gateway::run(commands, explorer, subscriptions, streams).await
-                {
-                    tracing::error!(?err, "discord gateway exited with error");
+            tokio::spawn(async move {
+                loop {
+                    if let Err(err) = discord_gateway::run(
+                        commands.clone(),
+                        explorer.clone(),
+                        subscriptions.clone(),
+                        streams.clone(),
+                    )
+                    .await
+                    {
+                        tracing::error!(?err, "discord gateway exited; retrying");
+                        sleep(TokioDuration::from_secs(5)).await;
+                        continue;
+                    }
+
+                    tracing::warn!("discord gateway exited without error; restarting");
+                    sleep(TokioDuration::from_secs(5)).await;
                 }
             });
         }
 
         tracing::info!(
-            "subscriptions enabled (gateway + reward poller + delegator poller + subscriber digest)"
+            "subscriptions enabled (gateway + reward poller + delegator poller + subscriber digest); webhook core remains up if commands tasks fail"
         );
     } else {
         tracing::info!(

@@ -136,6 +136,11 @@ cp infra/.env.example infra/.env
 docker compose -f infra/docker-compose.yaml up -d
 ```
 
+For containerized runs, keep `DATABASE_URL` on the mounted `/data` volume, for
+example `sqlite:///data/livepeer-payout-bot.db`. A relative SQLite path such as
+`sqlite://./livepeer-payout-bot.db` lives inside the container filesystem and
+will appear to "lose" subscriptions and cursors after container replacement.
+
 ## Configuration
 
 The full env var contract is documented in [.env.example](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/.env.example). The key variables are:
@@ -155,6 +160,15 @@ Optional timing and transport knobs:
 - `HTTP_TIMEOUT_SECS`
 - `RUST_LOG`
 - `USER_AGENT`
+
+Optional safety flag:
+
+- `WEBHOOK_POST_ENABLED` (default `true`): when set to `false`, the bot
+  still polls and persists events but does not spawn `digest_poster` or
+  `summary_poster`, so nothing is sent to `DISCORD_WEBHOOK_URL`. Use it in
+  a dev process that shares its webhook URL with prod to avoid
+  double-posting. Flipping back to `true` drains the backlog at the next
+  digest boundary.
 
 Additional variables when `COMMANDS_ENABLED=true`:
 
@@ -182,7 +196,10 @@ Additional variables when `COMMANDS_ENABLED=true`:
   - `subscriber_digest_poster`
   - Discord gateway / slash command runtime
 
-The process exits on `SIGINT`/`SIGTERM` or when a spawned task dies unexpectedly.
+The process exits on `SIGINT`/`SIGTERM` or when one of the always-on webhook
+tasks dies unexpectedly. In commands-enabled mode, the Discord gateway is
+treated as non-critical and is restarted in-process so slash-command trouble
+does not take down payout digests or summaries.
 
 ## Documentation map
 

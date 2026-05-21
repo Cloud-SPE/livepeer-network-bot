@@ -1,6 +1,5 @@
 //! Discord gateway runtime — owns the `poise` `Framework` + `serenity`
-//! `Client`. Spawned as a 4th tokio task by `runtime::run` when
-//! `COMMANDS_ENABLED=true`. Drives until shutdown signal.
+//! `Client`. Spawned by `runtime::run` when `COMMANDS_ENABLED=true`.
 //!
 //! Command registration:
 //!   - If `DISCORD_GUILD_ID` is set, commands are registered to that guild
@@ -69,20 +68,7 @@ pub async fn run(
     let mut client = serenity::ClientBuilder::new(&bot_token, GatewayIntents::non_privileged())
         .framework(framework)
         .await?;
-
-    let shard_manager = client.shard_manager.clone();
-
-    tokio::spawn(async move {
-        if let Err(err) = client.start().await {
-            tracing::error!(?err, "discord gateway client exited");
-        }
-    });
-
-    // Park: serenity drives forever; we just wait for ctrl_c. `runtime::run`
-    // handles the overall shutdown but if anything triggers it we want the
-    // gateway to disconnect cleanly.
-    let _ = tokio::signal::ctrl_c().await;
-    shard_manager.shutdown_all().await;
+    client.start().await?;
     Ok(())
 }
 
