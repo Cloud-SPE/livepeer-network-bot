@@ -72,10 +72,19 @@ async fn run_once<N: Notifier>(
             }
         }
 
+        // Anchor the 24h rolling total at the digest's latest ticket, not
+        // at wall-clock `now()`. This keeps the rolling number meaningful
+        // when the poster is draining a backfill — otherwise a ticket from
+        // last week would always show a 0 rolling total.
+        let anchor = tickets
+            .last()
+            .map(|t| t.block_timestamp)
+            .expect("by_orch group is non-empty");
         let totals = state
-            .orch_totals_since(
+            .orch_totals_window(
                 &orch_addr,
-                chrono::Utc::now() - chrono::Duration::hours(24),
+                anchor - chrono::Duration::hours(24),
+                anchor,
                 fee_cut,
             )
             .await?;

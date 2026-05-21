@@ -191,10 +191,16 @@ impl SqliteStateRepo {
         Ok(())
     }
 
-    pub async fn orch_totals_since(
+    /// Sum face-value + commission for an orchestrator across the half-open
+    /// window `(since, until]` (inclusive at both bounds — see SQL). Both
+    /// bounds are required so that the rolling total stays meaningful when
+    /// `digest_poster` is draining a backfill: anchor at the digest's
+    /// latest ticket, not at wall-clock `now()`.
+    pub async fn orch_totals_window(
         &self,
         to_address: &str,
         since: DateTime<Utc>,
+        until: DateTime<Utc>,
         fee_cut: f64,
     ) -> anyhow::Result<OrchTotals> {
         let row = sqlx::query(
@@ -206,10 +212,12 @@ impl SqliteStateRepo {
             WHERE event_name = 'WinningTicketRedeemed'
               AND to_address = ?
               AND block_timestamp >= ?
+              AND block_timestamp <= ?
             "#,
         )
         .bind(to_address)
         .bind(since)
+        .bind(until)
         .fetch_one(&self.pool)
         .await?;
 
