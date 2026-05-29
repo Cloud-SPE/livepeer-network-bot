@@ -279,6 +279,34 @@ fn error_reply(msg: &str) -> CreateReply {
     )
 }
 
+/// For the given period, returns the `[from, to]` date range for the LAST
+/// complete UTC period. Daily = yesterday; Weekly = last Mon–Sun; Monthly =
+/// previous month start–end.
+fn period_window(period: PeriodChoice, today: NaiveDate) -> (NaiveDate, NaiveDate) {
+    match period {
+        PeriodChoice::Daily => {
+            let d = today - chrono::Duration::days(1);
+            (d, d)
+        }
+        PeriodChoice::Weekly => {
+            let this_monday =
+                today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+            let last_monday = this_monday - chrono::Duration::days(7);
+            let last_sunday = last_monday + chrono::Duration::days(6);
+            (last_monday, last_sunday)
+        }
+        PeriodChoice::Monthly => {
+            let first_of_this =
+                NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid");
+            let last_day_prev = first_of_this - chrono::Duration::days(1);
+            let first_of_prev =
+                NaiveDate::from_ymd_opt(last_day_prev.year(), last_day_prev.month(), 1)
+                    .expect("valid");
+            (first_of_prev, last_day_prev)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::format_delegators_description;
@@ -319,33 +347,5 @@ mod tests {
         assert!(description.contains("**#1** `0xde42…c52c` — 7269.47 LPT (66.71%)"));
         assert!(description.contains("**#2** `0x8db2…7dfe` — 3628.18 LPT (33.29%)"));
         assert!(description.contains("_Top 2 by stake; total shown: 10897.65 LPT_"));
-    }
-}
-
-/// For the given period, returns the `[from, to]` date range for the LAST
-/// complete UTC period. Daily = yesterday; Weekly = last Mon–Sun; Monthly =
-/// previous month start–end.
-fn period_window(period: PeriodChoice, today: NaiveDate) -> (NaiveDate, NaiveDate) {
-    match period {
-        PeriodChoice::Daily => {
-            let d = today - chrono::Duration::days(1);
-            (d, d)
-        }
-        PeriodChoice::Weekly => {
-            let this_monday =
-                today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
-            let last_monday = this_monday - chrono::Duration::days(7);
-            let last_sunday = last_monday + chrono::Duration::days(6);
-            (last_monday, last_sunday)
-        }
-        PeriodChoice::Monthly => {
-            let first_of_this =
-                NaiveDate::from_ymd_opt(today.year(), today.month(), 1).expect("valid");
-            let last_day_prev = first_of_this - chrono::Duration::days(1);
-            let first_of_prev =
-                NaiveDate::from_ymd_opt(last_day_prev.year(), last_day_prev.month(), 1)
-                    .expect("valid");
-            (first_of_prev, last_day_prev)
-        }
     }
 }

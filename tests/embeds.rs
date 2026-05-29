@@ -92,6 +92,7 @@ fn stored_event_fixture(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stored_event_fixture_at(
     id: &str,
     tx: &str,
