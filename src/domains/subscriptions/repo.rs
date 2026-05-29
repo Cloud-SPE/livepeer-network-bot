@@ -7,6 +7,10 @@ pub struct Subscription {
     pub orchestrator_address: String,
     pub created_at: DateTime<Utc>,
     pub dm_failure_count: i64,
+    /// `true` once the bot has given up DMing this user (repeated 403s). The
+    /// row is retained so the user's intent survives; the flag is surfaced in
+    /// `/subscriptions` and cleared automatically on the next successful DM.
+    pub dm_blocked: bool,
 }
 
 /// CRUD for the `subscriptions` table.
@@ -67,7 +71,7 @@ impl SqliteSubscriptionsRepo {
     pub async fn list_for_user(&self, discord_user_id: &str) -> anyhow::Result<Vec<Subscription>> {
         let rows = sqlx::query(
             r#"
-            SELECT discord_user_id, orchestrator_address, created_at, dm_failure_count
+            SELECT discord_user_id, orchestrator_address, created_at, dm_failure_count, dm_blocked
             FROM subscriptions
             WHERE discord_user_id = ?
             ORDER BY created_at ASC
@@ -77,15 +81,7 @@ impl SqliteSubscriptionsRepo {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| Subscription {
-                discord_user_id: r.get(0),
-                orchestrator_address: r.get(1),
-                created_at: r.get(2),
-                dm_failure_count: r.get(3),
-            })
-            .collect())
+        Ok(rows.into_iter().map(row_to_subscription).collect())
     }
 
     pub async fn count_for_user(&self, discord_user_id: &str) -> anyhow::Result<i64> {
@@ -115,7 +111,7 @@ impl SqliteSubscriptionsRepo {
     ) -> anyhow::Result<Vec<Subscription>> {
         let rows = sqlx::query(
             r#"
-            SELECT discord_user_id, orchestrator_address, created_at, dm_failure_count
+            SELECT discord_user_id, orchestrator_address, created_at, dm_failure_count, dm_blocked
             FROM subscriptions
             WHERE orchestrator_address = ?
             "#,
@@ -124,15 +120,7 @@ impl SqliteSubscriptionsRepo {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| Subscription {
-                discord_user_id: r.get(0),
-                orchestrator_address: r.get(1),
-                created_at: r.get(2),
-                dm_failure_count: r.get(3),
-            })
-            .collect())
+        Ok(rows.into_iter().map(row_to_subscription).collect())
     }
 
     /// Increment the DM failure counter for a subscription. Returns the new
@@ -165,7 +153,8 @@ impl SqliteSubscriptionsRepo {
         Ok(row.map(|r| r.get::<i64, _>(0)).unwrap_or(0))
     }
 
-    /// Reset the failure counter to zero after a successful DM.
+    /// Reset the failure counter and clear the blocked flag after a
+    /// successful DM — the user's DMs are reachable again.
     pub async fn clear_dm_failure(
         &self,
         discord_user_id: &str,
@@ -174,9 +163,9 @@ impl SqliteSubscriptionsRepo {
         sqlx::query(
             r#"
             UPDATE subscriptions
-            SET dm_failure_count = 0
+            SET dm_failure_count = 0, dm_blocked = 0
             WHERE discord_user_id = ? AND orchestrator_address = ?
-              AND dm_failure_count > 0
+              AND (dm_failure_count > 0 OR dm_blocked = 1)
             "#,
         )
         .bind(discord_user_id)
@@ -184,5 +173,37 @@ impl SqliteSubscriptionsRepo {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Mark a subscription as DM-blocked after repeated 403s. The row is kept
+    /// (the user's intent is preserved) and the state is surfaced in
+    /// `/subscriptions`; `clear_dm_failure` lifts it on the next good DM.
+    pub async fn set_dm_blocked(
+        &self,
+        discord_user_id: &str,
+        orchestrator_address: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE subscriptions
+            SET dm_blocked = 1
+            WHERE discord_user_id = ? AND orchestrator_address = ?
+            "#,
+        )
+        .bind(discord_user_id)
+        .bind(orchestrator_address)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+}
+
+fn row_to_subscription(r: sqlx::sqlite::SqliteRow) -> Subscription {
+    Subscription {
+        discord_user_id: r.get(0),
+        orchestrator_address: r.get(1),
+        created_at: r.get(2),
+        dm_failure_count: r.get(3),
+        dm_blocked: r.get::<i64, _>(4) != 0,
     }
 }
