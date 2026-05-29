@@ -232,6 +232,7 @@ pub fn build_summary(
     period_date: NaiveDate,
     summary: &PayoutSummaryResponse,
     leaderboard: &[PayoutLeaderboardRow],
+    incomplete: bool,
 ) -> Value {
     let total_ticket: f64 = parse_f64(&Some(summary.ticket_count.clone()));
     let total_eth: f64 = parse_f64(&Some(summary.sum_face_value_native.clone()));
@@ -288,15 +289,27 @@ pub fn build_summary(
         period_date.format("%Y-%m-%d")
     );
 
+    let mut embed = json!({
+        "color": "60296",
+        "title": title,
+        "description": description,
+        "url": url,
+    });
+    // Backstop path only: the readiness gate gave up after the configured
+    // max-defer window, so the figures may not reflect the explorer's final
+    // indexing. A footer keeps the post honest without altering the
+    // byte-for-byte body the normal (ready) path emits.
+    if incomplete {
+        embed.as_object_mut().unwrap().insert(
+            "footer".into(),
+            json!({ "text": "⚠️ Data may be incomplete — published before the explorer finished indexing this period." }),
+        );
+    }
+
     json!({
         "username": USERNAME,
         "avatar_url": AVATAR_URL,
-        "embeds": [{
-            "color": "60296",
-            "title": title,
-            "description": description,
-            "url": url,
-        }]
+        "embeds": [embed]
     })
 }
 

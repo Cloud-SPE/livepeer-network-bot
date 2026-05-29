@@ -16,6 +16,7 @@ pub struct Config {
     /// without double-posting. Events still poll and persist.
     pub webhook_post_enabled: bool,
     pub summary_poll_interval: Duration,
+    pub summary_readiness: SummaryReadiness,
     pub reward_poll_interval: Duration,
     pub delegator_poll_interval: Duration,
     pub subscriber_digest_interval: Duration,
@@ -36,6 +37,22 @@ pub struct CommandsConfig {
     pub max_subscriptions_per_user: u32,
     /// Consecutive DM 403 failures before a subscription is auto-removed.
     pub dm_failure_auto_unsub: i64,
+}
+
+/// Gating thresholds that keep the daily/weekly/monthly summary poster from
+/// publishing a rollup before the explorer has finished indexing, enriching,
+/// and deriving the period's data. A period is never posted before
+/// `period_end + settle_<cadence>`, and only once the rollup is fully priced,
+/// not behind the bot's own ingested event count, and stable across two
+/// consecutive polls. `max_defer` is the backstop: past `period_end +
+/// max_defer` the rollup is posted with an "incomplete" marker rather than
+/// being skipped silently. See `domains::scheduler::summary_poster`.
+#[derive(Debug, Clone)]
+pub struct SummaryReadiness {
+    pub settle_daily: Duration,
+    pub settle_weekly: Duration,
+    pub settle_monthly: Duration,
+    pub max_defer: Duration,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +80,12 @@ impl Config {
         let digest_fetch_limit = u32_var("DIGEST_FETCH_LIMIT", 500)?;
         let webhook_post_enabled = bool_var("WEBHOOK_POST_ENABLED", true)?;
         let summary_poll_interval = secs_var("SUMMARY_POLL_INTERVAL_SECS", 60 * 60)?;
+        let summary_readiness = SummaryReadiness {
+            settle_daily: secs_var("SUMMARY_SETTLE_DAILY_SECS", 6 * 60 * 60)?,
+            settle_weekly: secs_var("SUMMARY_SETTLE_WEEKLY_SECS", 12 * 60 * 60)?,
+            settle_monthly: secs_var("SUMMARY_SETTLE_MONTHLY_SECS", 24 * 60 * 60)?,
+            max_defer: secs_var("SUMMARY_MAX_DEFER_SECS", 48 * 60 * 60)?,
+        };
         let reward_poll_interval = secs_var("REWARD_POLL_INTERVAL_SECS", 60)?;
         let delegator_poll_interval = secs_var("DELEGATOR_POLL_INTERVAL_SECS", 60)?;
         let subscriber_digest_interval = secs_var("SUBSCRIBER_DIGEST_INTERVAL_SECS", 15 * 60)?;
@@ -86,6 +109,7 @@ impl Config {
             digest_fetch_limit,
             webhook_post_enabled,
             summary_poll_interval,
+            summary_readiness,
             reward_poll_interval,
             delegator_poll_interval,
             subscriber_digest_interval,

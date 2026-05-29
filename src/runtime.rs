@@ -61,8 +61,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let notifier = notifier.clone();
             let state = state.clone();
             let interval = config.summary_poll_interval;
+            let readiness = config.summary_readiness.clone();
             tasks.spawn(async move {
-                summary_poster::run(explorer, notifier, state, interval).await;
+                summary_poster::run(explorer, notifier, state, interval, readiness).await;
             });
         }
     } else {

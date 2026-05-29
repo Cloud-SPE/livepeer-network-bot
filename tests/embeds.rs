@@ -347,6 +347,7 @@ fn summary_embed_shape() {
         NaiveDate::from_ymd_opt(2026, 5, 14).unwrap(),
         &summary,
         &leaderboard,
+        false,
     );
 
     // Network block:
@@ -377,6 +378,50 @@ fn summary_embed_shape() {
     });
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn summary_embed_incomplete_adds_footer_but_keeps_body() {
+    let summary = PayoutSummaryResponse {
+        period_start: "2026-05-14".into(),
+        period_end: "2026-05-14".into(),
+        valuation_version: "v1".into(),
+        job_type: "both".into(),
+        ticket_count: "322".into(),
+        sum_face_value_native: "0.7027".into(),
+        sum_face_value_usd: "1600.12".into(),
+        sum_commission_native: "0.6456".into(),
+        sum_commission_usd: "1470.14".into(),
+        sum_delegators_share_native: "0.0571".into(),
+        sum_delegators_share_usd: "129.97".into(),
+        distinct_gateways: "4".into(),
+        usd_rows_priced: "300".into(),
+    };
+
+    let ready = build_summary(
+        Cadence::Daily,
+        NaiveDate::from_ymd_opt(2026, 5, 14).unwrap(),
+        &summary,
+        &[],
+        false,
+    );
+    let incomplete = build_summary(
+        Cadence::Daily,
+        NaiveDate::from_ymd_opt(2026, 5, 14).unwrap(),
+        &summary,
+        &[],
+        true,
+    );
+
+    // The incomplete variant differs from the ready variant only by an added
+    // footer — the title/description/url body is untouched.
+    let ready_embed = ready["embeds"][0].as_object().unwrap();
+    let incomplete_embed = incomplete["embeds"][0].as_object().unwrap();
+    assert!(ready_embed.get("footer").is_none());
+    assert!(incomplete_embed.get("footer").is_some());
+    for key in ["color", "title", "description", "url"] {
+        assert_eq!(ready_embed.get(key), incomplete_embed.get(key));
+    }
 }
 
 // ----- build_reward_event_dm ----------------------------------------------
