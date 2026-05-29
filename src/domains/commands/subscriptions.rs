@@ -35,11 +35,22 @@ pub async fn subscriptions(ctx: CommandContext<'_>) -> Result<(), CommandError> 
                     .unwrap_or_else(|| s.orchestrator_address.clone()),
                 Err(_) => s.orchestrator_address.clone(),
             };
+            let flag = if s.dm_blocked {
+                "  ⚠️ DM-blocked"
+            } else {
+                ""
+            };
             let _ = writeln!(
                 buf,
-                "• **{}** — `{}`",
+                "• **{}** — `{}`{}",
                 name,
-                short_addr(&s.orchestrator_address)
+                short_addr(&s.orchestrator_address),
+                flag
+            );
+        }
+        if subs.iter().any(|s| s.dm_blocked) {
+            buf.push_str(
+                "\n⚠️ Entries marked **DM-blocked** mean I couldn't deliver a DM to you, so notifications are paused (your subscription is kept). Enable **\"Allow direct messages from server members\"** in Discord and make sure we share a server — delivery resumes automatically on the next successful DM.",
             );
         }
         buf

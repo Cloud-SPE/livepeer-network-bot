@@ -15,6 +15,17 @@ pub struct StoredEvent {
     pub native_usd_price: Option<String>,
 }
 
+/// Snapshot of a payout-summary rollup as last observed from the explorer.
+/// Two consecutive snapshots with identical figures mean the rollup has
+/// stabilized — see `summary_poster`'s readiness gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummarySnapshot {
+    pub ticket_count: String,
+    pub usd_rows_priced: String,
+    pub sum_face_value_native: String,
+    pub sum_commission_native: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct OrchTotals {
     pub face_value_eth: f64,
@@ -229,6 +240,88 @@ impl SqliteStateRepo {
             commission_eth: face_eth * fee_cut,
             commission_usd: face_usd * fee_cut,
         })
+    }
+
+    /// Count of locally-ingested WinningTicketRedeemed events in the
+    /// half-open window `[since, until)`. The summary poster uses this as a
+    /// cross-check: if the explorer's rollup reports fewer tickets than the
+    /// bot has already seen on-chain, the rollup is still catching up.
+    pub async fn count_winning_tickets_in_window(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> anyhow::Result<i64> {
+        let row = sqlx::query(
+            r#"
+            SELECT COUNT(*)
+            FROM events
+            WHERE event_name = 'WinningTicketRedeemed'
+              AND block_timestamp >= ?
+              AND block_timestamp < ?
+            "#,
+        )
+        .bind(since)
+        .bind(until)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get(0))
+    }
+
+    pub async fn get_summary_snapshot(
+        &self,
+        cadence: Cadence,
+        period_date: NaiveDate,
+    ) -> anyhow::Result<Option<SummarySnapshot>> {
+        let row = sqlx::query(
+            r#"
+            SELECT ticket_count, usd_rows_priced, sum_face_value_native, sum_commission_native
+            FROM summary_snapshots
+            WHERE period = ? AND period_date = ?
+            "#,
+        )
+        .bind(cadence.as_path())
+        .bind(period_date.format("%Y-%m-%d").to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| SummarySnapshot {
+            ticket_count: r.get(0),
+            usd_rows_priced: r.get(1),
+            sum_face_value_native: r.get(2),
+            sum_commission_native: r.get(3),
+        }))
+    }
+
+    pub async fn upsert_summary_snapshot(
+        &self,
+        cadence: Cadence,
+        period_date: NaiveDate,
+        snap: &SummarySnapshot,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO summary_snapshots (
+                period, period_date, ticket_count, usd_rows_priced,
+                sum_face_value_native, sum_commission_native, observed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(period, period_date) DO UPDATE SET
+                ticket_count = excluded.ticket_count,
+                usd_rows_priced = excluded.usd_rows_priced,
+                sum_face_value_native = excluded.sum_face_value_native,
+                sum_commission_native = excluded.sum_commission_native,
+                observed_at = excluded.observed_at
+            "#,
+        )
+        .bind(cadence.as_path())
+        .bind(period_date.format("%Y-%m-%d").to_string())
+        .bind(&snap.ticket_count)
+        .bind(&snap.usd_rows_priced)
+        .bind(&snap.sum_face_value_native)
+        .bind(&snap.sum_commission_native)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn summary_posted(

@@ -12,9 +12,11 @@ use poise::serenity_prelude::{self as serenity, CreateMessage, UserId};
 #[derive(Debug, thiserror::Error)]
 pub enum DmError {
     /// 403 from Discord — the recipient has DMs disabled, has blocked the
-    /// bot, or no longer shares a guild with it.
-    #[error("recipient has DMs closed or blocked the bot")]
-    DmsClosed,
+    /// bot, or no longer shares a guild with it. `code` is the Discord JSON
+    /// error code when present (50007 = "Cannot send messages to this user",
+    /// the privacy/no-mutual-guild case) so callers can log the distinction.
+    #[error("recipient has DMs closed or blocked the bot (discord code {code:?})")]
+    DmsClosed { code: Option<i64> },
     /// 429 after serenity exhausted its internal retries.
     #[error("rate limited")]
     RateLimited,
@@ -52,7 +54,9 @@ impl BotDmSender {
 fn classify_error(err: serenity::Error) -> DmError {
     if let serenity::Error::Http(serenity::http::HttpError::UnsuccessfulRequest(resp)) = &err {
         return match resp.status_code.as_u16() {
-            403 => DmError::DmsClosed,
+            403 => DmError::DmsClosed {
+                code: Some(resp.error.code as i64),
+            },
             429 => DmError::RateLimited,
             _ => DmError::Other(err.to_string()),
         };

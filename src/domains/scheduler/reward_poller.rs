@@ -6,7 +6,8 @@
 //!    advancing the local cursor. New rows go into `reward_events`.
 //! 2. **Notify.** Pull `reward_events` rows with `sent_to_subscribers_at IS
 //!    NULL`, for each find the subscribers of that orch, DM each subscriber.
-//!    Auto-unsubscribe after `failure_threshold` consecutive DM 403s.
+//!    Flag the subscription as DM-blocked after `failure_threshold`
+//!    consecutive DM 403s (the row is retained, not deleted).
 //!
 //! The event is marked `sent_to_subscribers_at = now()` once we've attempted
 //! every subscriber. Transient failures are NOT retried per-event (would
@@ -122,19 +123,20 @@ async fn dispatch(
                             .clear_dm_failure(&sub.discord_user_id, &sub.orchestrator_address)
                             .await;
                     }
-                    Err(DmError::DmsClosed) => {
+                    Err(DmError::DmsClosed { code }) => {
                         let count = subscriptions
                             .increment_dm_failure(&sub.discord_user_id, &sub.orchestrator_address)
                             .await?;
-                        if count >= failure_threshold {
+                        if count >= failure_threshold && !sub.dm_blocked {
                             subscriptions
-                                .delete(&sub.discord_user_id, &sub.orchestrator_address)
+                                .set_dm_blocked(&sub.discord_user_id, &sub.orchestrator_address)
                                 .await?;
                             tracing::info!(
                                 user = %sub.discord_user_id,
                                 orch = %sub.orchestrator_address,
                                 failures = count,
-                                "auto-unsubscribed after consecutive DM failures"
+                                discord_code = ?code,
+                                "flagged subscription as DM-blocked after consecutive DM failures (subscription retained)"
                             );
                         }
                     }

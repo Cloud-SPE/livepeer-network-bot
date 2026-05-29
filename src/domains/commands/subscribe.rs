@@ -66,7 +66,8 @@ pub async fn subscribe(
     if inserted {
         title = "Subscribed";
         msg = format!(
-            "Now following **{}** (`{}`). You're subscribed to {} of {} orchestrators.",
+            "Now following **{}** (`{}`). You're subscribed to {} of {} orchestrators.\n\n\
+             📩 Notifications arrive as DMs. Make sure we share a server and that **\"Allow direct messages from server members\"** is enabled, or I won't be able to reach you — `/subscriptions` shows delivery status.",
             name,
             short_addr(&addr),
             count + 1,

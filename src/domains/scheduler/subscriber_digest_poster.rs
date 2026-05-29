@@ -6,7 +6,8 @@
 //! window. Bonds are pre-classified using local history into new-delegator
 //! and stake-change buckets so the message can label each line accurately.
 //!
-//! Auto-unsubscribes after `failure_threshold` consecutive 403s (same logic
+//! Flags the subscription as DM-blocked after `failure_threshold`
+//! consecutive 403s without deleting it (same logic
 //! as the reward poller in 004b).
 //!
 //! Marking semantics: an event is marked `sent_to_subscribers = 1` ONLY
@@ -138,22 +139,23 @@ async fn run_once(
                                 .clear_dm_failure(&sub.discord_user_id, &sub.orchestrator_address)
                                 .await;
                         }
-                        Err(DmError::DmsClosed) => {
+                        Err(DmError::DmsClosed { code }) => {
                             let count = subscriptions
                                 .increment_dm_failure(
                                     &sub.discord_user_id,
                                     &sub.orchestrator_address,
                                 )
                                 .await?;
-                            if count >= failure_threshold {
+                            if count >= failure_threshold && !sub.dm_blocked {
                                 subscriptions
-                                    .delete(&sub.discord_user_id, &sub.orchestrator_address)
+                                    .set_dm_blocked(&sub.discord_user_id, &sub.orchestrator_address)
                                     .await?;
                                 tracing::info!(
                                     user = %sub.discord_user_id,
                                     orch = %sub.orchestrator_address,
                                     failures = count,
-                                    "auto-unsubscribed after consecutive DM failures"
+                                    discord_code = ?code,
+                                    "flagged subscription as DM-blocked after consecutive DM failures (subscription retained)"
                                 );
                             }
                         }
