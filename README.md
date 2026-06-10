@@ -148,7 +148,12 @@ The full env var contract is documented in [.env.example](/home/mazup/git-repos/
 Required in all modes:
 
 - `EXPLORER_BASE_URL`: Livepeer protocol explorer base URL.
-- `DISCORD_WEBHOOK_URL`: Discord webhook for public digest and summary embeds.
+- `DISCORD_WEBHOOK_URL`: Discord webhook(s) for public digest and summary
+  embeds. Accepts a single URL, or several comma-separated URLs to fan the
+  same posts out to multiple servers (one webhook per server channel).
+  Delivery is best-effort per webhook and all servers share one global
+  send watermark, so a permanently-broken webhook silently misses messages
+  until fixed rather than blocking or duplicating to the healthy ones.
 - `DATABASE_URL`: SQLite connection string.
 
 Optional timing and transport knobs:

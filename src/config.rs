@@ -5,12 +5,17 @@ use url::Url;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub explorer_base_url: Url,
-    pub discord_webhook_url: Url,
+    /// One or more Discord webhook URLs to which every public-channel embed
+    /// is POSTed. Parsed from a comma-separated `DISCORD_WEBHOOK_URL`, so a
+    /// single-server deploy sets one URL and a multi-server deploy lists
+    /// several (one webhook per server channel). Posting fans out to all of
+    /// them; see `providers::discord::FanOutNotifier`.
+    pub discord_webhook_urls: Vec<Url>,
     pub database_url: String,
     pub event_poll_interval: Duration,
     pub digest_window: Duration,
     pub digest_fetch_limit: u32,
-    /// When `false`, nothing is sent to `discord_webhook_url`: neither the
+    /// When `false`, nothing is sent to any `discord_webhook_urls`: neither the
     /// per-orchestrator ticket digests nor the daily/weekly/monthly
     /// summaries are spawned. Used in dev to share a webhook URL with prod
     /// without double-posting. Events still poll and persist.
@@ -70,7 +75,7 @@ pub enum ConfigError {
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let explorer_base_url = url_var("EXPLORER_BASE_URL")?;
-        let discord_webhook_url = url_var("DISCORD_WEBHOOK_URL")?;
+        let discord_webhook_urls = url_list_var("DISCORD_WEBHOOK_URL")?;
         let database_url =
             std::env::var("DATABASE_URL").map_err(|_| ConfigError::Missing("DATABASE_URL"))?;
         validate_database_url(&database_url, running_in_container())?;
@@ -102,7 +107,7 @@ impl Config {
 
         Ok(Self {
             explorer_base_url,
-            discord_webhook_url,
+            discord_webhook_urls,
             database_url,
             event_poll_interval,
             digest_window,
@@ -145,6 +150,34 @@ fn url_var(name: &'static str) -> Result<Url, ConfigError> {
         var: name,
         source: anyhow::Error::new(e),
     })
+}
+
+/// Parse a comma-separated list of URLs from one env var. Whitespace around
+/// each entry is trimmed and empty entries (e.g. a trailing comma) are
+/// skipped, so a single-URL value parses to a one-element list unchanged.
+/// At least one valid URL is required.
+fn url_list_var(name: &'static str) -> Result<Vec<Url>, ConfigError> {
+    let raw = std::env::var(name).map_err(|_| ConfigError::Missing(name))?;
+    parse_url_list(name, &raw)
+}
+
+fn parse_url_list(name: &'static str, raw: &str) -> Result<Vec<Url>, ConfigError> {
+    let mut urls = Vec::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let url = Url::parse(trimmed).map_err(|e| ConfigError::Invalid {
+            var: name,
+            source: anyhow::Error::new(e),
+        })?;
+        urls.push(url);
+    }
+    if urls.is_empty() {
+        return Err(ConfigError::Missing(name));
+    }
+    Ok(urls)
 }
 
 fn secs_var(name: &'static str, default: u64) -> Result<Duration, ConfigError> {
@@ -249,7 +282,43 @@ fn running_in_container() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_database_url;
+    use super::{parse_url_list, validate_database_url};
+
+    #[test]
+    fn parses_single_webhook_url() {
+        let urls = parse_url_list("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/a")
+            .expect("single URL parses");
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].as_str(), "https://discord.com/api/webhooks/a");
+    }
+
+    #[test]
+    fn parses_comma_separated_webhook_urls_trimming_and_skipping_blanks() {
+        let urls = parse_url_list(
+            "DISCORD_WEBHOOK_URL",
+            " https://discord.com/api/webhooks/a , https://discord.com/api/webhooks/b ,",
+        )
+        .expect("multiple URLs parse");
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].as_str(), "https://discord.com/api/webhooks/a");
+        assert_eq!(urls[1].as_str(), "https://discord.com/api/webhooks/b");
+    }
+
+    #[test]
+    fn empty_or_blank_webhook_list_is_missing() {
+        assert!(parse_url_list("DISCORD_WEBHOOK_URL", "").is_err());
+        assert!(parse_url_list("DISCORD_WEBHOOK_URL", "  , ,").is_err());
+    }
+
+    #[test]
+    fn invalid_webhook_url_is_rejected() {
+        assert!(parse_url_list("DISCORD_WEBHOOK_URL", "not a url").is_err());
+        assert!(parse_url_list(
+            "DISCORD_WEBHOOK_URL",
+            "https://discord.com/api/webhooks/a, not-a-url"
+        )
+        .is_err());
+    }
 
     #[test]
     fn allows_relative_sqlite_path_outside_container() {

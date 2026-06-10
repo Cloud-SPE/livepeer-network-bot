@@ -177,6 +177,65 @@ impl Notifier for DiscordWebhook {
     }
 }
 
+/// Fans a single embed payload out to several `DiscordWebhook`s — one per
+/// Discord server channel in a multi-server deploy. Each inner webhook keeps
+/// its own rate-limit bucket (Discord buckets are per-webhook), so they do
+/// not contend.
+///
+/// Delivery is **best-effort**: every webhook is attempted, and a per-webhook
+/// failure is logged but does not abort the others. `send` returns `Ok` if at
+/// least one webhook accepted the payload, and `Err` only if *every* webhook
+/// failed. This matters because the callers advance a single global
+/// `sent_to_discord` watermark on `Ok`: returning `Ok` on partial success
+/// lets a permanently-broken webhook silently miss messages (instead of
+/// re-posting to the healthy ones forever), while returning `Err` only on a
+/// total outage lets the poster retry without producing duplicates.
+pub struct FanOutNotifier {
+    webhooks: Vec<DiscordWebhook>,
+}
+
+impl FanOutNotifier {
+    /// Build one `DiscordWebhook` per URL, all sharing the same HTTP client.
+    /// `urls` must be non-empty (enforced by config parsing).
+    pub fn new(client: Client, urls: Vec<Url>) -> Self {
+        let webhooks = urls
+            .into_iter()
+            .map(|url| DiscordWebhook::new(client.clone(), url))
+            .collect();
+        Self { webhooks }
+    }
+}
+
+#[allow(clippy::manual_async_fn)]
+impl Notifier for FanOutNotifier {
+    fn send(&self, payload: Value) -> impl std::future::Future<Output = anyhow::Result<()>> + Send {
+        async move {
+            let mut any_ok = false;
+            let mut last_err: Option<anyhow::Error> = None;
+            for (idx, webhook) in self.webhooks.iter().enumerate() {
+                match webhook.send(payload.clone()).await {
+                    Ok(()) => any_ok = true,
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "discord_metrics",
+                            webhook_index = idx,
+                            webhook_count = self.webhooks.len(),
+                            error = %err,
+                            "fanout_webhook_failed"
+                        );
+                        last_err = Some(err);
+                    }
+                }
+            }
+            if any_ok {
+                Ok(())
+            } else {
+                Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no webhooks configured")))
+            }
+        }
+    }
+}
+
 async fn wait_for_gate(state: &mut BucketState) {
     let gate = state.gate.take();
     if let Some(t) = gate {

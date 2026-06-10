@@ -15,7 +15,7 @@ use crate::{
         subscriptions::repo::SqliteSubscriptionsRepo,
     },
     providers::{
-        database, discord::DiscordWebhook, discord_bot::BotDmSender, discord_gateway, http,
+        database, discord::FanOutNotifier, discord_bot::BotDmSender, discord_gateway, http,
     },
 };
 
@@ -27,9 +27,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         http_client.clone(),
         config.explorer_base_url.clone(),
     ));
-    let notifier = Arc::new(DiscordWebhook::new(
+    let notifier = Arc::new(FanOutNotifier::new(
         http_client.clone(),
-        config.discord_webhook_url.clone(),
+        config.discord_webhook_urls.clone(),
     ));
     let state = Arc::new(SqliteStateRepo::new(pool.clone()));
     let streams = Arc::new(EventStreamsRepo::new(pool.clone()));

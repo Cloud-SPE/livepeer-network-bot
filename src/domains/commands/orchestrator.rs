@@ -151,30 +151,7 @@ pub async fn rewards(
         .find(|r| r.orchestrator_address.to_lowercase() == addr);
 
     let description = match row {
-        Some(r) => {
-            let total_lpt = parse_f64_or_zero(&r.sum_total_tokens) / 1e18;
-            let orch_lpt = parse_f64_or_zero(&r.sum_orch_tokens) / 1e18;
-            let delegators_lpt = parse_f64_or_zero(&r.sum_delegators_tokens) / 1e18;
-            let total_usd = parse_f64_or_zero(&r.sum_total_tokens_usd);
-            let orch_usd = parse_f64_or_zero(&r.sum_orch_tokens_usd);
-            let count = parse_f64_or_zero(&r.reward_event_count) as u64;
-            format!(
-                "**{}** ({} – {})\n\n\
-                 Reward events: **{}**\n\
-                 Total distributed: **{:.4} LPT** (${:.2})\n\
-                 Orchestrator cut: **{:.4} LPT** (${:.2})\n\
-                 Delegators cut: **{:.4} LPT**",
-                period.label(),
-                from,
-                to,
-                count,
-                total_lpt,
-                total_usd,
-                orch_lpt,
-                orch_usd,
-                delegators_lpt,
-            )
-        }
+        Some(r) => format_rewards_description(r, period.label(), from, to),
         None => format!(
             "No reward activity for `{}` in {} ({} – {}).",
             short_addr(&addr),
@@ -194,6 +171,31 @@ pub async fn rewards(
     )
     .await?;
     Ok(())
+}
+
+/// The explorer rewards leaderboard returns token sums already denominated
+/// in whole LPT (e.g. "6180.605443…"), NOT wei — do not rescale. Verified
+/// against onchain BondingManager `Reward` event sums.
+fn format_rewards_description(
+    r: &crate::domains::explorer::types::RewardLeaderboardRow,
+    period_label: &str,
+    from: NaiveDate,
+    to: NaiveDate,
+) -> String {
+    let total_lpt = parse_f64_or_zero(&r.sum_total_tokens);
+    let orch_lpt = parse_f64_or_zero(&r.sum_orch_tokens);
+    let delegators_lpt = parse_f64_or_zero(&r.sum_delegators_tokens);
+    let total_usd = parse_f64_or_zero(&r.sum_total_tokens_usd);
+    let orch_usd = parse_f64_or_zero(&r.sum_orch_tokens_usd);
+    let count = parse_f64_or_zero(&r.reward_event_count) as u64;
+    format!(
+        "**{}** ({} – {})\n\n\
+         Reward events: **{}**\n\
+         Total distributed: **{:.4} LPT** (${:.2})\n\
+         Orchestrator cut: **{:.4} LPT** (${:.2})\n\
+         Delegators cut: **{:.4} LPT**",
+        period_label, from, to, count, total_lpt, total_usd, orch_lpt, orch_usd, delegators_lpt,
+    )
 }
 
 #[poise::command(slash_command, ephemeral)]
@@ -309,8 +311,10 @@ fn period_window(period: PeriodChoice, today: NaiveDate) -> (NaiveDate, NaiveDat
 
 #[cfg(test)]
 mod tests {
-    use super::format_delegators_description;
-    use crate::domains::explorer::types::OrchDelegatorRow;
+    use chrono::NaiveDate;
+
+    use super::{format_delegators_description, format_rewards_description};
+    use crate::domains::explorer::types::{OrchDelegatorRow, RewardLeaderboardRow};
 
     fn delegator(addr: &str, bonded_principal: &str) -> OrchDelegatorRow {
         OrchDelegatorRow {
@@ -347,5 +351,34 @@ mod tests {
         assert!(description.contains("**#1** `0xde42…c52c` — 7269.47 LPT (66.71%)"));
         assert!(description.contains("**#2** `0x8db2…7dfe` — 3628.18 LPT (33.29%)"));
         assert!(description.contains("_Top 2 by stake; total shown: 10897.65 LPT_"));
+    }
+
+    /// Values are the live API response for lpt.moudi.eth, week 2026-06-01 –
+    /// 2026-06-07, cross-checked against the sum of the 8 onchain
+    /// BondingManager `Reward` events for that window (6180.605443589182 LPT).
+    #[test]
+    fn rewards_description_uses_lpt_units_directly() {
+        let row = RewardLeaderboardRow {
+            orchestrator_address: "0x141e6d4953b933746c770272126db2bd691a9683".into(),
+            display_name: Some("lpt.moudi.eth".into()),
+            avatar_url: None,
+            reward_event_count: "8".into(),
+            sum_total_tokens: "6180.605443589182597266".into(),
+            sum_total_tokens_usd: "11704.171079767097644062".into(),
+            sum_orch_tokens: "185.418163307675477918".into(),
+            sum_orch_tokens_usd: "351.125132393012929321".into(),
+            sum_delegators_tokens: "5995.187280281507119348".into(),
+            sum_delegators_tokens_usd: "11353.045947374084714741".into(),
+            usd_rows_priced: "8".into(),
+        };
+        let from = NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 6, 7).unwrap();
+
+        let description = format_rewards_description(&row, "Weekly", from, to);
+
+        assert!(description.contains("Reward events: **8**"));
+        assert!(description.contains("Total distributed: **6180.6054 LPT** ($11704.17)"));
+        assert!(description.contains("Orchestrator cut: **185.4182 LPT** ($351.13)"));
+        assert!(description.contains("Delegators cut: **5995.1873 LPT**"));
     }
 }
