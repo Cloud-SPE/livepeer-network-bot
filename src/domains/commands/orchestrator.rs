@@ -9,7 +9,7 @@
 //! All replies are ephemeral. Period is `daily | weekly | monthly` and always
 //! refers to the LAST complete UTC period, never today-so-far.
 
-use std::fmt::Write;
+use std::{collections::HashSet, fmt::Write};
 
 use chrono::{Datelike, NaiveDate, Utc};
 use poise::{
@@ -18,6 +18,9 @@ use poise::{
 };
 
 use super::{is_valid_eth_address, parse_f64_or_zero, short_addr, CommandContext, CommandError};
+
+const DELEGATOR_DISPLAY_LIMIT: usize = 10;
+const DELEGATOR_PAGE_LIMIT: u32 = 500;
 
 #[derive(Debug, Clone, Copy, poise::ChoiceParameter)]
 pub enum PeriodChoice {
@@ -63,19 +66,14 @@ pub async fn delegators(
             .map_err(Into::into);
     }
 
-    let resp = ctx
-        .data()
-        .explorer
-        .orchestrator_delegators(&addr, None, 10)
-        .await?;
+    let explorer = ctx.data().explorer.as_ref();
+    let profile = explorer.get_orchestrator(&addr).await?;
+    let total = parse_f64_or_zero(&profile.total_stake);
+    let mut delegators = fetch_all_delegators(explorer, &addr).await?;
 
-    let total: f64 = resp
-        .data
-        .iter()
-        .map(|d| parse_f64_or_zero(&d.bonded_principal))
-        .sum();
-
-    let description = format_delegators_description(&addr, &resp.data, total);
+    delegators.sort_by(|a, b| delegator_stake_lpt(b).total_cmp(&delegator_stake_lpt(a)));
+    delegators.truncate(DELEGATOR_DISPLAY_LIMIT);
+    let description = format_delegators_description(&addr, &delegators, total);
 
     ctx.send(
         CreateReply::default().ephemeral(true).embed(
@@ -89,6 +87,40 @@ pub async fn delegators(
     Ok(())
 }
 
+async fn fetch_all_delegators(
+    explorer: &crate::domains::explorer::client::ExplorerClient,
+    addr: &str,
+) -> Result<Vec<crate::domains::explorer::types::OrchDelegatorRow>, CommandError> {
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = HashSet::new();
+    let mut out = Vec::new();
+
+    loop {
+        let resp = explorer
+            .orchestrator_delegators(addr, cursor.as_deref(), DELEGATOR_PAGE_LIMIT)
+            .await?;
+        if resp.data.is_empty() {
+            break;
+        }
+        out.extend(resp.data);
+
+        match resp.meta.next_cursor {
+            Some(next) if seen_cursors.insert(next.clone()) => cursor = Some(next),
+            Some(_) | None => break,
+        }
+    }
+
+    Ok(out)
+}
+
+fn delegator_stake_lpt(d: &crate::domains::explorer::types::OrchDelegatorRow) -> f64 {
+    d.pending_stake
+        .as_deref()
+        .map(parse_f64_or_zero)
+        .filter(|v| *v > 0.0)
+        .unwrap_or_else(|| parse_f64_or_zero(&d.bonded_principal))
+}
+
 fn format_delegators_description(
     orch_addr: &str,
     delegators: &[crate::domains::explorer::types::OrchDelegatorRow],
@@ -100,9 +132,9 @@ fn format_delegators_description(
 
     let mut buf = String::new();
     for (i, d) in delegators.iter().enumerate() {
-        let bonded_lpt = parse_f64_or_zero(&d.bonded_principal);
+        let stake_lpt = delegator_stake_lpt(d);
         let pct = if total_lpt > 0.0 {
-            100.0 * bonded_lpt / total_lpt
+            100.0 * stake_lpt / total_lpt
         } else {
             0.0
         };
@@ -111,13 +143,13 @@ fn format_delegators_description(
             "**#{}** `{}` — {:.2} LPT ({:.2}%)",
             i + 1,
             short_addr(&d.delegator_address),
-            bonded_lpt,
+            stake_lpt,
             pct
         );
     }
     let _ = write!(
         buf,
-        "\n_Top {} by stake; total shown: {:.2} LPT_",
+        "\n_Top {} by stake; total stake: {:.2} LPT_",
         delegators.len(),
         total_lpt
     );
@@ -313,7 +345,7 @@ fn period_window(period: PeriodChoice, today: NaiveDate) -> (NaiveDate, NaiveDat
 mod tests {
     use chrono::NaiveDate;
 
-    use super::{format_delegators_description, format_rewards_description};
+    use super::{delegator_stake_lpt, format_delegators_description, format_rewards_description};
     use crate::domains::explorer::types::{OrchDelegatorRow, RewardLeaderboardRow};
 
     fn delegator(addr: &str, bonded_principal: &str) -> OrchDelegatorRow {
@@ -329,18 +361,26 @@ mod tests {
     }
 
     #[test]
-    fn delegators_description_uses_lpt_units_directly() {
+    fn delegators_description_uses_pending_stake_when_present() {
         let rows = vec![
-            delegator(
-                "0xde42f514869714f911fb61f9a07f6149fcb3c52c",
-                "7269.467093857653",
-            ),
-            delegator(
-                "0x8db248cba18678df52b1093b675385da94587dfe",
-                "3628.178738145608",
-            ),
+            {
+                let mut d = delegator(
+                    "0xde42f514869714f911fb61f9a07f6149fcb3c52c",
+                    "7269.467093857653",
+                );
+                d.pending_stake = Some("8000.25".into());
+                d
+            },
+            {
+                let mut d = delegator(
+                    "0x8db248cba18678df52b1093b675385da94587dfe",
+                    "3628.178738145608",
+                );
+                d.pending_stake = Some("4000.5".into());
+                d
+            },
         ];
-        let total = 10897.645832003261;
+        let total = 20000.0;
 
         let description = format_delegators_description(
             "0xb120a72a9264e90092e8197c0fabd210c18bc5be",
@@ -348,9 +388,18 @@ mod tests {
             total,
         );
 
-        assert!(description.contains("**#1** `0xde42…c52c` — 7269.47 LPT (66.71%)"));
-        assert!(description.contains("**#2** `0x8db2…7dfe` — 3628.18 LPT (33.29%)"));
-        assert!(description.contains("_Top 2 by stake; total shown: 10897.65 LPT_"));
+        assert!(description.contains("**#1** `0xde42…c52c` — 8000.25 LPT (40.00%)"));
+        assert!(description.contains("**#2** `0x8db2…7dfe` — 4000.50 LPT (20.00%)"));
+        assert!(description.contains("_Top 2 by stake; total stake: 20000.00 LPT_"));
+    }
+
+    #[test]
+    fn delegator_stake_falls_back_to_bonded_principal() {
+        let d = delegator(
+            "0xde42f514869714f911fb61f9a07f6149fcb3c52c",
+            "7269.467093857653",
+        );
+        assert_eq!(delegator_stake_lpt(&d), 7269.467093857653);
     }
 
     /// Values are the live API response for lpt.moudi.eth, week 2026-06-01 –
