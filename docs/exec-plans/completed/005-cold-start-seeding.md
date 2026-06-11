@@ -13,7 +13,7 @@ On a freshly-seeded SQLite, `delegator_history` is empty. The first `Bond` event
 `src/domains/subscriptions/seed.rs` with two helpers:
 
 - `seed_one(explorer, streams, orch_address)` — pages `/api/v1/orchestrators/{addr}/delegators` (default limit 500, cursor-paginated) and `INSERT OR IGNORE`s each `(delegator, orch)` pair into `delegator_history`.
-- `seed_all_subscribed(explorer, streams, subscriptions)` — finds every distinct orch with a subscriber and calls `seed_one` for each.
+- `seed_all_subscribed(explorer, streams, subscriptions)` — finds every distinct orch with a subscriber and seeds subscription-scoped history for each. It originally called `seed_one` for delegator history only; it now also marks existing cut-change history as already sent.
 
 Wired in two places:
 

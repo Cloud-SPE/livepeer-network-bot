@@ -1,18 +1,10 @@
-//! Reward event poller.
+//! TranscoderUpdate cut-change poller.
 //!
-//! Two responsibilities, run sequentially each tick:
-//!
-//! 1. **Ingest.** Paginated GET against `/api/v1/events?event_name=Reward`,
-//!    advancing the local cursor. New rows go into `reward_events`.
-//! 2. **Notify.** Pull `reward_events` rows with `sent_to_subscribers_at IS
-//!    NULL`, for each find the subscribers of that orch, DM each subscriber.
-//!    Flag the subscription as DM-blocked after `failure_threshold`
-//!    consecutive DM 403s (the row is retained, not deleted).
-//!
-//! The event is marked `sent_to_subscribers_at = now()` once we've attempted
-//! every subscriber. Transient failures are NOT retried per-event (would
-//! cause duplicates for already-delivered subscribers); they're tolerated and
-//! the failure counter on the subscription handles the persistent cases.
+//! Each tick scopes work to orchestrators that currently have subscribers,
+//! fetches recent `/transcoders/{addr}/params/history` rows, persists them,
+//! and DMs subscribers for newly observed rows. The first time an orchestrator
+//! is observed, existing history is inserted as already-sent so deployment or
+//! first subscription does not spam historical updates.
 
 use std::{sync::Arc, time::Duration};
 
@@ -20,23 +12,19 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use crate::{
     domains::{
-        explorer::client::ExplorerClient,
-        notify::dm::build_reward_event_dm,
-        state::{event_streams::EventStreamsRepo, repo::SqliteStateRepo},
-        subscriptions::repo::SqliteSubscriptionsRepo,
+        explorer::client::ExplorerClient, notify::dm::build_cut_change_dm,
+        state::event_streams::EventStreamsRepo, subscriptions::repo::SqliteSubscriptionsRepo,
     },
     providers::discord_bot::{BotDmSender, DmError},
 };
 
-const CURSOR_NAME: &str = "events:Reward";
-const PAGE_LIMIT: u32 = 100;
+const HISTORY_LIMIT: u32 = 50;
 const DISPATCH_BATCH: i64 = 50;
 
 pub async fn run(
     explorer: Arc<ExplorerClient>,
     streams: Arc<EventStreamsRepo>,
     subscriptions: Arc<SqliteSubscriptionsRepo>,
-    state: Arc<SqliteStateRepo>,
     dm: Arc<BotDmSender>,
     failure_threshold: i64,
     poll_interval: Duration,
@@ -46,14 +34,14 @@ pub async fn run(
 
     loop {
         tick.tick().await;
-        if let Err(err) = ingest(&explorer, &streams, &state).await {
-            tracing::error!(?err, "reward poller: ingest failed");
+        if let Err(err) = ingest(&explorer, &streams, &subscriptions).await {
+            tracing::error!(?err, "cut-change poller: ingest failed");
             continue;
         }
         if let Err(err) =
             dispatch(&explorer, &streams, &subscriptions, &dm, failure_threshold).await
         {
-            tracing::error!(?err, "reward poller: dispatch failed");
+            tracing::error!(?err, "cut-change poller: dispatch failed");
         }
     }
 }
@@ -61,28 +49,16 @@ pub async fn run(
 async fn ingest(
     explorer: &ExplorerClient,
     streams: &EventStreamsRepo,
-    state: &SqliteStateRepo,
+    subscriptions: &SqliteSubscriptionsRepo,
 ) -> anyhow::Result<()> {
-    let mut cursor = state.get_cursor(CURSOR_NAME).await?;
-    loop {
+    let orchs = subscriptions.distinct_subscribed_orchestrators().await?;
+    for orch in orchs {
+        let first_seen = !streams.has_cut_change_events_for_orch(&orch).await?;
         let resp = explorer
-            .list_events("Reward", cursor.as_deref(), PAGE_LIMIT)
+            .transcoder_params_history(&orch, HISTORY_LIMIT)
             .await?;
-        if resp.data.is_empty() {
-            break;
-        }
         for ev in &resp.data {
-            streams.insert_reward_event(ev).await?;
-        }
-        match resp.next_cursor {
-            Some(next) => {
-                state.set_cursor(CURSOR_NAME, &next).await?;
-                cursor = Some(next);
-                if resp.data.len() < PAGE_LIMIT as usize {
-                    break;
-                }
-            }
-            None => break,
+            streams.insert_cut_change_event(ev, first_seen).await?;
         }
     }
     Ok(())
@@ -95,7 +71,10 @@ async fn dispatch(
     dm: &BotDmSender,
     failure_threshold: i64,
 ) -> anyhow::Result<()> {
-    let pending = streams.fetch_unsent_reward_events(DISPATCH_BATCH).await?;
+    let pending = streams
+        .fetch_unsent_cut_change_events(DISPATCH_BATCH)
+        .await?;
+
     for ev in pending {
         let subs = subscriptions
             .find_for_orchestrator(&ev.orch_address)
@@ -103,7 +82,7 @@ async fn dispatch(
 
         if !subs.is_empty() {
             let orch = explorer.get_orchestrator(&ev.orch_address).await?;
-            let message = build_reward_event_dm(&orch, &ev);
+            let message = build_cut_change_dm(&orch, &ev);
 
             for sub in subs {
                 let user_id: u64 = match sub.discord_user_id.parse() {
@@ -144,17 +123,15 @@ async fn dispatch(
                         tracing::error!(
                             ?other,
                             user = %sub.discord_user_id,
-                            "reward DM send failed (transient)"
+                            "cut-change DM send failed (transient)"
                         );
                     }
                 }
             }
         }
 
-        // Mark sent unconditionally: transient failures are not retried at
-        // event scope (would duplicate-deliver to subscribers who already
-        // received it); per-subscription failure counters drive DM-blocking.
-        streams.mark_reward_event_sent(&ev.id).await?;
+        streams.mark_cut_change_event_sent(&ev.event_id).await?;
     }
+
     Ok(())
 }

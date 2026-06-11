@@ -24,6 +24,7 @@ pub struct Config {
     pub summary_readiness: SummaryReadiness,
     pub reward_poll_interval: Duration,
     pub delegator_poll_interval: Duration,
+    pub cut_change_poll_interval: Duration,
     pub subscriber_digest_interval: Duration,
     pub http_timeout: Duration,
     pub user_agent: String,
@@ -40,7 +41,7 @@ pub struct CommandsConfig {
     /// useful during development). When `None`, registration is global.
     pub guild_id: Option<u64>,
     pub max_subscriptions_per_user: u32,
-    /// Consecutive DM 403 failures before a subscription is auto-removed.
+    /// Consecutive DM 403 failures before a subscription is marked DM-blocked.
     pub dm_failure_auto_unsub: i64,
 }
 
@@ -93,6 +94,7 @@ impl Config {
         };
         let reward_poll_interval = secs_var("REWARD_POLL_INTERVAL_SECS", 60)?;
         let delegator_poll_interval = secs_var("DELEGATOR_POLL_INTERVAL_SECS", 60)?;
+        let cut_change_poll_interval = secs_var("CUT_CHANGE_POLL_INTERVAL_SECS", 60)?;
         let subscriber_digest_interval = secs_var("SUBSCRIBER_DIGEST_INTERVAL_SECS", 15 * 60)?;
         let http_timeout = secs_var("HTTP_TIMEOUT_SECS", 30)?;
 
@@ -117,6 +119,7 @@ impl Config {
             summary_readiness,
             reward_poll_interval,
             delegator_poll_interval,
+            cut_change_poll_interval,
             subscriber_digest_interval,
             http_timeout,
             user_agent,

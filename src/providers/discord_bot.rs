@@ -3,7 +3,7 @@
 //! Wraps `serenity::http::Http` so we get its built-in bucket-aware rate
 //! limiting for free. Exposes a single async method `send_dm` plus a typed
 //! error so callers can distinguish "user closed DMs" from other failures
-//! and drive the auto-unsubscribe logic in 004b's reward poller.
+//! and drive the per-subscription DM-blocked logic in DM pollers.
 
 use std::sync::Arc;
 

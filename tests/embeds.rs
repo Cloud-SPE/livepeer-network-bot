@@ -7,8 +7,8 @@
 //!
 //! Webhook embeds (build_single_ticket, build_digest, build_summary) return
 //! `serde_json::Value` directly. DM embeds (build_reward_event_dm,
-//! build_delegator_digest_dm) return `serenity::all::CreateMessage` and are
-//! compared via `serde_json::to_value`.
+//! build_cut_change_dm, build_delegator_digest_dm) return
+//! `serenity::all::CreateMessage` and are compared via `serde_json::to_value`.
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use livepeer_payout_bot::domains::{
@@ -17,11 +17,13 @@ use livepeer_payout_bot::domains::{
         PayoutSummaryResponse,
     },
     notify::{
-        dm::{build_delegator_digest_dm, build_reward_event_dm, DelegatorDigest},
+        dm::{
+            build_cut_change_dm, build_delegator_digest_dm, build_reward_event_dm, DelegatorDigest,
+        },
         embed::{build_digest, build_single_ticket, build_summary, TicketView},
     },
     state::{
-        event_streams::{DelegatorEventRow, RewardEventRow},
+        event_streams::{CutChangeEventRow, DelegatorEventRow, RewardEventRow},
         repo::{OrchTotals, StoredEvent},
     },
 };
@@ -452,6 +454,41 @@ fn reward_dm_shape() {
         "description": "[**MyOrch**](https://tools.livepeer.cloud/orchestrator/0xorch0001) earned **12.3456 LPT** (~$99.99) in inflation rewards.\n\n[View transaction](https://arbiscan.io/tx/0xrewardtx)",
         "color": 0xFFA500,
         "timestamp": "2026-05-15T09:00:00Z",
+        "thumbnail": {
+            "url": "https://avatar",
+            "height": null,
+            "proxy_url": null,
+            "width": null,
+        },
+    });
+
+    assert_eq!(actual, &expected);
+}
+
+// ----- build_cut_change_dm -------------------------------------------------
+
+#[test]
+fn cut_change_dm_shape() {
+    let event = CutChangeEventRow {
+        event_id: "cut1".into(),
+        tx_hash: "0xcuttx".into(),
+        block_timestamp: ts(2026, 5, 15, 10, 0, 0),
+        orch_address: "0xorch0001".into(),
+        reward_cut_percent: "12.34".into(),
+        fee_share_percent: "80".into(),
+        fee_cut_percent: "20".into(),
+    };
+    let orch = orch_fixture("MyOrch", "0xorch0001", "20", Some("https://avatar"));
+
+    let full = serde_json::to_value(build_cut_change_dm(&orch, &event)).unwrap();
+    let actual = &full["embeds"][0];
+
+    let expected = json!({
+        "type": "rich",
+        "title": "Cut change",
+        "description": "[**MyOrch**](https://tools.livepeer.cloud/orchestrator/0xorch0001) updated its cuts:\n\nReward cut: **12.34%** (orchestrator)\nFee Share: **80.00%** (delegators)\nFee Cut: **20.00%** (orchestrator)\n\n[View transaction](https://arbiscan.io/tx/0xcuttx)",
+        "color": 0x969696,
+        "timestamp": "2026-05-15T10:00:00Z",
         "thumbnail": {
             "url": "https://avatar",
             "height": null,

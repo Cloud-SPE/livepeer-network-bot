@@ -53,7 +53,7 @@ All replies are ephemeral by default. Period summaries use the last complete UTC
 - `reward_events` / `delegator_events` / `delegator_history` tables
 - Per-event DM delivery
 - 15-min subscriber digest
-- 403 → auto-unsubscribe (`dm_failure_count` column exists, but nothing increments it yet)
+- 403 → DM-blocked state (`dm_failure_count` column exists, but nothing increments it yet)
 
 ## Verification
 

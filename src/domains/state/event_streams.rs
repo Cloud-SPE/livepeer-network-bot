@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 
-use crate::domains::explorer::types::EventRow;
+use crate::domains::explorer::types::{EventRow, TranscoderParamsRow};
 
 #[derive(Debug, Clone)]
 pub struct RewardEventRow {
@@ -27,6 +27,17 @@ pub struct DelegatorEventRow {
     pub orch_address: String,
     pub amount_native: Option<String>,
     pub amount_usd: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CutChangeEventRow {
+    pub event_id: String,
+    pub tx_hash: String,
+    pub block_timestamp: DateTime<Utc>,
+    pub orch_address: String,
+    pub reward_cut_percent: String,
+    pub fee_share_percent: String,
+    pub fee_cut_percent: String,
 }
 
 #[derive(Debug)]
@@ -109,6 +120,87 @@ impl EventStreamsRepo {
         sqlx::query("UPDATE reward_events SET sent_to_subscribers_at = ? WHERE id = ?")
             .bind(Utc::now())
             .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ---- cut_change_events -------------------------------------------------
+
+    pub async fn has_cut_change_events_for_orch(&self, orch_address: &str) -> anyhow::Result<bool> {
+        let row = sqlx::query("SELECT 1 FROM cut_change_events WHERE orch_address = ? LIMIT 1")
+            .bind(orch_address)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn insert_cut_change_event(
+        &self,
+        ev: &TranscoderParamsRow,
+        mark_sent: bool,
+    ) -> anyhow::Result<bool> {
+        let sent_at = mark_sent.then(Utc::now);
+        let result = sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO cut_change_events (
+                event_id, tx_hash, log_index, block_number, block_timestamp,
+                orch_address, reward_cut_percent, fee_share_percent,
+                fee_cut_percent, fetched_at, sent_to_subscribers_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&ev.event_id)
+        .bind(&ev.tx_hash)
+        .bind(ev.log_index)
+        .bind(&ev.block_number)
+        .bind(ev.block_timestamp)
+        .bind(&ev.transcoder_address)
+        .bind(&ev.reward_cut_percent)
+        .bind(&ev.fee_share_percent)
+        .bind(&ev.fee_cut_percent)
+        .bind(Utc::now())
+        .bind(sent_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn fetch_unsent_cut_change_events(
+        &self,
+        limit: i64,
+    ) -> anyhow::Result<Vec<CutChangeEventRow>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT event_id, tx_hash, block_timestamp, orch_address,
+                   reward_cut_percent, fee_share_percent, fee_cut_percent
+            FROM cut_change_events
+            WHERE sent_to_subscribers_at IS NULL
+            ORDER BY block_timestamp ASC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| CutChangeEventRow {
+                event_id: r.get(0),
+                tx_hash: r.get(1),
+                block_timestamp: r.get(2),
+                orch_address: r.get(3),
+                reward_cut_percent: r.get(4),
+                fee_share_percent: r.get(5),
+                fee_cut_percent: r.get(6),
+            })
+            .collect())
+    }
+
+    pub async fn mark_cut_change_event_sent(&self, event_id: &str) -> anyhow::Result<()> {
+        sqlx::query("UPDATE cut_change_events SET sent_to_subscribers_at = ? WHERE event_id = ?")
+            .bind(Utc::now())
+            .bind(event_id)
             .execute(&self.pool)
             .await?;
         Ok(())

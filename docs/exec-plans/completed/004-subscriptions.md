@@ -8,7 +8,7 @@
 |---|---|---|
 | [004a](004a-slash-commands.md) | Slash commands + gateway runtime + subscriptions table | in progress |
 | [004b](004b-event-pollers.md) | Reward + delegator pollers + DmSender provider + per-event reward DMs | pending |
-| [004c](004c-subscriber-digest.md) | Subscriber digest poster (15-min delegator change DMs) + auto-unsubscribe on 403 | pending |
+| [004c](004c-subscriber-digest.md) | Subscriber digest poster (15-min delegator change DMs) + DM-blocked state on repeated 403s | pending |
 
 ## Locked decisions
 
@@ -18,7 +18,7 @@
 | Delegator event set | `Bond` + `Unbond` + `Rebond`, differentiate new vs. stake-change via local history |
 | Subscribers receive `WinningTicketRedeemed` DMs | No — tickets stay public-channel only in v1 |
 | Cap on subscriptions per user | 25 (`MAX_SUBSCRIPTIONS_PER_USER`) |
-| Auto-unsubscribe on Discord 403 | After 3 consecutive DM failures per subscription |
+| DM-blocked state on Discord 403 | After 3 consecutive DM failures per subscription |
 | Library | `poise` 0.6 (built on `serenity`) |
 | Slash command response embeds | `serenity::all::CreateEmbed` builder (separate from existing `serde_json::Value` webhook embeds) |
 | Receive transport | Gateway WebSocket — no public HTTP ingress required |
@@ -39,4 +39,4 @@
 | `DISCORD_APPLICATION_ID` | `COMMANDS_ENABLED=true` | numeric app ID for command registration |
 | `DISCORD_GUILD_ID` | optional | when set, registers commands per-guild for instant updates during dev |
 | `MAX_SUBSCRIPTIONS_PER_USER` | optional, default `25` | per-user cap enforced by `/subscribe` |
-| `DM_FAILURE_AUTO_UNSUB` | optional, default `3` | consecutive 403s before auto-removing a subscription |
+| `DM_FAILURE_AUTO_UNSUB` | optional, default `3` | consecutive 403s before marking a subscription DM-blocked |

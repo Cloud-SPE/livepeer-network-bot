@@ -10,7 +10,7 @@
 
 | Path | Purpose |
 |---|---|
-| `src/domains/scheduler/subscriber_digest_poster.rs` | 15-min wall-clock-aligned tick. Reads unsent delegator events, groups by orch, finds subscribers, fans out one DM per (subscriber, orch). Same auto-unsub pattern as `reward_poller`. |
+| `src/domains/scheduler/subscriber_digest_poster.rs` | 15-min wall-clock-aligned tick. Reads unsent delegator events, groups by orch, finds subscribers, fans out one DM per (subscriber, orch). Same DM-blocked pattern as `reward_poller`. |
 | `src/domains/notify/dm.rs` | `DelegatorDigest<'_>` aggregation struct + `build_delegator_digest_dm` that produces the CreateMessage. |
 
 ### Code changes
@@ -36,7 +36,7 @@ Zero → "new delegator." Non-zero → "stake increase." Note that `delegator_hi
 
 ## Marking semantics
 
-An event row is marked `sent_to_subscribers = 1` once every subscriber for its orch has had a delivery attempt this tick. Per-subscriber transient failures don't roll the whole event back; they're logged. Persistent 403s drive the per-subscription failure counter that auto-unsubscribes (reused from 004b).
+An event row is marked `sent_to_subscribers = 1` once every subscriber for its orch has had a delivery attempt this tick. Per-subscriber transient failures don't roll the whole event back; they're logged. Persistent 403s drive the per-subscription failure counter that marks delivery DM-blocked (reused from 004b).
 
 If an orch has zero subscribers, events still get marked sent — there's nobody to notify, so leaving them unsent would just accumulate.
 
@@ -45,7 +45,7 @@ If an orch has zero subscribers, events still get marked sent — there's nobody
 1. `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build` — all green
 2. With `COMMANDS_ENABLED=true` and an active subscription to an orch that receives a Bond, a DM arrives within one `SUBSCRIBER_DIGEST_INTERVAL_SECS` tick
 3. Bonding to the same orch twice in one window → first labeled "new delegator", second labeled "stake increase"
-4. Subscriber with DMs disabled receives 3 attempts (across three windows or events), then is auto-removed
+4. Subscriber with DMs disabled receives 3 attempts (across three windows or events), then is marked DM-blocked
 
 ## After 004c
 

@@ -2,9 +2,9 @@
 
 This document is the **contract**. The Rust embed builders in `src/domains/notify/embed.rs` must produce JSON that matches these shapes byte-for-byte. Format strings, color constants, and URL patterns are lifted verbatim from `livepeer-backend-rs/src/tasks/ticket_digest.rs` and `payout_summary.rs`.
 
-## Common envelope
+## Common webhook envelope
 
-Every Discord payload posted by the bot uses the same envelope:
+Every public webhook payload posted by the bot uses the same envelope. DM and slash-command responses use `serenity` builders and are documented separately below.
 
 ```json
 {
@@ -204,7 +204,33 @@ Sections are omitted entirely when empty. If all four buckets are empty for a (s
 
 Bonds are split into "New delegators" (no prior `delegator_events` row for this `(delegator, orch)` pair) and "Stake increases" (one or more prior rows exist). The check is a `COUNT(*)` against the same table with `block_timestamp < this_event.block_timestamp`.
 
-## 6. Slash command response embeds
+## 6. Cut-change DM (subscriber)
+
+Built with `serenity::all::CreateMessage` + `CreateEmbed`. Sent privately to each user subscribed to the orchestrator that emitted a new `TranscoderUpdate` row. Source: `src/domains/notify/dm.rs::build_cut_change_dm`.
+
+| Field | Value |
+|---|---|
+| `title` | `"Cut change"` |
+| `color` | `#969696` (grey) |
+| `timestamp` | event `block_timestamp` |
+| `thumbnail.url` | orchestrator `avatar_url` if present, omitted otherwise |
+| `description` | see below |
+
+### Description format
+
+```
+[**{orch_name}**](https://tools.livepeer.cloud/orchestrator/{orch_addr}) updated its cuts:
+
+Reward cut: **{reward_cut_percent:.2}%** (orchestrator)
+Fee Share: **{fee_share_percent:.2}%** (delegators)
+Fee Cut: **{fee_cut_percent:.2}%** (orchestrator)
+
+[View transaction](https://arbiscan.io/tx/{tx_hash})
+```
+
+The first time the bot observes an orchestrator's params history, existing rows are seeded as already sent. Subscribers only receive DMs for newly observed cut changes after tracking begins.
+
+## 7. Slash command response embeds
 
 Built with `serenity::all::CreateEmbed` (NOT `serde_json::Value`) because they are gateway responses, not webhook posts. All slash command replies are **ephemeral** (`CreateReply::default().ephemeral(true)`). See `src/domains/commands/`.
 
@@ -217,6 +243,7 @@ Built with `serenity::all::CreateEmbed` (NOT `serde_json::Value`) because they a
 | Neutral (e.g. "you weren't subscribed") | `#969696` (grey) |
 | `/orchestrator rewards` | `#ffa500` (orange — matches digest AI accent) |
 | `/orchestrator tickets` | `#ffd700` (gold — matches digest transcoding accent) |
+| `/orchestrator cuts` | `#969696` (grey) |
 
 ### Per-command shape
 
@@ -226,6 +253,7 @@ Built with `serenity::all::CreateEmbed` (NOT `serde_json::Value`) because they a
 - **`/orchestrator delegators <orchestrator>`** — Title: `Delegators of {short_addr}`. Description lists top-10 delegators ranked by current stake (`pending_stake` when present and positive, otherwise `bonded_principal`), each line as `**#{rank}** \`{short_addr}\` — {LPT:.2} LPT ({pct:.2}%)`. Percentages are computed against the orchestrator profile's `total_stake`, not just the 10 displayed rows or the sum of fetched `bonded_principal` values. Footer line: `_Top N by stake; total stake: {LPT:.2} LPT_`.
 - **`/orchestrator rewards <orchestrator> <period>`** — Title: `Rewards · {short_addr}`. Description has the period label + date range, then `Reward events: N`, `Total distributed: X LPT ($Y)`, `Orchestrator cut: X LPT ($Y)`, `Delegators cut: X LPT`. Empty case: `No reward activity for {short_addr} in {period} ({from} – {to}).`
 - **`/orchestrator tickets <orchestrator> <period>`** — Title: `Tickets · {short_addr}`. Same shape as rewards but with ETH/USD on face value, commission, and delegators' share, plus distinct gateways count.
+- **`/orchestrator cuts <orchestrator>`** — Title: `Current cuts · {short_addr}`. Description is exactly `Reward cut: **{reward_cut_percent:.2}%** (orchestrator)`, `Fee Share: **{fee_share_percent:.2}%** (delegators)`, and `Fee Cut: **{fee_cut_percent:.2}%** (orchestrator)` on separate lines.
 
 ### Address truncation
 

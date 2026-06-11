@@ -5,6 +5,7 @@
 //!   /orchestrator delegators <address>
 //!   /orchestrator rewards    <address> <period>
 //!   /orchestrator tickets    <address> <period>
+//!   /orchestrator cuts       <address>
 //!
 //! All replies are ephemeral. Period is `daily | weekly | monthly` and always
 //! refers to the LAST complete UTC period, never today-so-far.
@@ -45,7 +46,7 @@ impl PeriodChoice {
 /// Parent command — never invoked directly; subcommands fan out below it.
 #[poise::command(
     slash_command,
-    subcommands("delegators", "rewards", "tickets"),
+    subcommands("delegators", "rewards", "tickets", "cuts"),
     subcommand_required
 )]
 pub async fn orchestrator(_: CommandContext<'_>) -> Result<(), CommandError> {
@@ -304,6 +305,56 @@ pub async fn tickets(
     Ok(())
 }
 
+#[poise::command(slash_command, ephemeral)]
+pub async fn cuts(
+    ctx: CommandContext<'_>,
+    #[description = "Orchestrator address (0x...)"] orchestrator: String,
+) -> Result<(), CommandError> {
+    let addr = orchestrator.trim().to_lowercase();
+    if !is_valid_eth_address(&addr) {
+        ctx.send(error_reply("Invalid orchestrator address."))
+            .await?;
+        return Ok(());
+    }
+
+    let profile = ctx.data().explorer.get_orchestrator(&addr).await?;
+    let description = format_cuts_description(
+        &profile.reward_cut_percent,
+        &profile.fee_share_percent,
+        &profile.fee_cut_percent,
+    );
+
+    ctx.send(
+        CreateReply::default().ephemeral(true).embed(
+            CreateEmbed::new()
+                .title(format!("Current cuts · {}", short_addr(&addr)))
+                .description(description)
+                .colour(Colour::from_rgb(0x96, 0x96, 0x96)),
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+fn format_cuts_description(
+    reward_cut_percent: &str,
+    fee_share_percent: &str,
+    fee_cut_percent: &str,
+) -> String {
+    format!(
+        "Reward cut: **{}** (orchestrator)\n\
+         Fee Share: **{}** (delegators)\n\
+         Fee Cut: **{}** (orchestrator)",
+        format_percent(reward_cut_percent),
+        format_percent(fee_share_percent),
+        format_percent(fee_cut_percent),
+    )
+}
+
+fn format_percent(raw: &str) -> String {
+    format!("{:.2}%", parse_f64_or_zero(raw))
+}
+
 fn error_reply(msg: &str) -> CreateReply {
     CreateReply::default().ephemeral(true).embed(
         CreateEmbed::new()
@@ -345,7 +396,10 @@ fn period_window(period: PeriodChoice, today: NaiveDate) -> (NaiveDate, NaiveDat
 mod tests {
     use chrono::NaiveDate;
 
-    use super::{delegator_stake_lpt, format_delegators_description, format_rewards_description};
+    use super::{
+        delegator_stake_lpt, format_cuts_description, format_delegators_description,
+        format_rewards_description,
+    };
     use crate::domains::explorer::types::{OrchDelegatorRow, RewardLeaderboardRow};
 
     fn delegator(addr: &str, bonded_principal: &str) -> OrchDelegatorRow {
@@ -429,5 +483,17 @@ mod tests {
         assert!(description.contains("Total distributed: **6180.6054 LPT** ($11704.17)"));
         assert!(description.contains("Orchestrator cut: **185.4182 LPT** ($351.13)"));
         assert!(description.contains("Delegators cut: **5995.1873 LPT**"));
+    }
+
+    #[test]
+    fn cuts_description_labels_orchestrator_portions() {
+        let description = format_cuts_description("12.34", "80", "20");
+
+        assert_eq!(
+            description,
+            "Reward cut: **12.34%** (orchestrator)\n\
+             Fee Share: **80.00%** (delegators)\n\
+             Fee Cut: **20.00%** (orchestrator)"
+        );
     }
 }

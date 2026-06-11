@@ -124,7 +124,7 @@ impl SqliteSubscriptionsRepo {
     }
 
     /// Increment the DM failure counter for a subscription. Returns the new
-    /// counter value so the caller can decide whether to auto-unsubscribe.
+    /// counter value so the caller can decide whether to mark delivery blocked.
     pub async fn increment_dm_failure(
         &self,
         discord_user_id: &str,

@@ -2,7 +2,7 @@
 
 ## One-paragraph summary
 
-`livepeer-payout-bot` is a single Rust process that polls the Livepeer protocol explorer REST API, stores cursors and delivery state in SQLite, and sends Discord notifications. In its base shape it posts public webhook digests for `WinningTicketRedeemed` events plus daily/weekly/monthly network summaries. When `COMMANDS_ENABLED=true`, it also opens a Discord gateway connection, serves slash commands, stores user subscriptions, seeds delegator history, and delivers subscriber DMs for `Reward`, `Bond`, `Unbond`, and `Rebond` activity.
+`livepeer-payout-bot` is a single Rust process that polls the Livepeer protocol explorer REST API, stores cursors and delivery state in SQLite, and sends Discord notifications. In its base shape it posts public webhook digests for `WinningTicketRedeemed` events plus daily/weekly/monthly network summaries. When `COMMANDS_ENABLED=true`, it also opens a Discord gateway connection, serves slash commands, stores user subscriptions, seeds subscription-scoped history, and delivers subscriber DMs for `Reward`, delegator activity, and reward-cut / fee-share changes.
 
 ## Architectural goals
 
@@ -57,9 +57,11 @@ Enabled when `COMMANDS_ENABLED=true`.
 Includes everything from webhook-only mode, plus:
 
 - startup seeding of `delegator_history`
+- startup seeding of existing cut-change history into `cut_change_events`
 - Discord gateway runtime for slash commands
 - `reward_poller`
 - `delegator_poller`
+- `cut_change_poller`
 - `subscriber_digest_poster`
 
 Used for interactive subscriptions and direct-message fan-out.
@@ -144,7 +146,7 @@ This split is deliberate:
 | `src/main.rs` | loads `.env`, configures JSON tracing, parses config, enters runtime |
 | `src/config.rs` | parses env vars once and fails on invalid input |
 | `src/runtime.rs` | constructs providers/repos/clients and spawns all Tokio tasks |
-| `src/seed.rs` | idempotent cold-start and per-subscribe seeding of delegator history |
+| `src/seed.rs` | idempotent cold-start and per-subscribe seeding for subscription-scoped history |
 | `src/providers/http.rs` | shared `reqwest::Client` |
 | `src/providers/database.rs` | opens SQLite, enables WAL, runs migrations |
 | `src/providers/discord.rs` | webhook sender with rate-limit awareness and retries |
@@ -182,8 +184,8 @@ sequenceDiagram
     Runtime->>Runtime: construct clients/repos/providers
     Runtime->>Tasks: spawn always-on schedulers
     alt COMMANDS_ENABLED=true
-        Runtime->>Runtime: seed delegator history
-        Runtime->>Tasks: spawn reward/delegator/subscriber tasks
+        Runtime->>Runtime: seed subscription history
+        Runtime->>Tasks: spawn reward/delegator/cut-change/subscriber tasks
         Runtime->>Tasks: spawn Discord gateway runtime
     end
     Runtime->>Runtime: wait for ctrl-c or unexpected core-task exit
@@ -285,6 +287,9 @@ sequenceDiagram
         Cmd->>Seed: seed_one(orch)
         Seed->>Explorer: list orchestrator delegators
         Seed->>Streams: record first-seen delegators
+        Cmd->>Seed: seed_cut_history_one(orch)
+        Seed->>Explorer: list transcoder params history
+        Seed->>Streams: mark existing cut changes sent
     end
     Cmd-->>User: ephemeral success/error embed
 ```
@@ -297,6 +302,7 @@ Command surface today:
 - `/orchestrator delegators`
 - `/orchestrator rewards`
 - `/orchestrator tickets`
+- `/orchestrator cuts`
 
 #### Reward DMs
 
@@ -361,8 +367,36 @@ sequenceDiagram
 Important semantics:
 
 - DM flows do not reuse the webhook sender; they use a bot-authenticated Discord HTTP client.
-- Auto-unsubscribe is driven by consecutive DM `403` failures.
+- DM-blocked state is driven by consecutive DM `403` failures; subscription rows are retained.
 - Transient DM failures are logged but do not cause per-event replay, which avoids duplicate delivery to users who already received the message.
+
+#### Cut-change DMs
+
+```mermaid
+sequenceDiagram
+    participant Poller as cut_change_poller
+    participant Explorer as Explorer API
+    participant Streams as EventStreamsRepo
+    participant Subs as SqliteSubscriptionsRepo
+    participant DM as BotDmSender
+
+    loop every CUT_CHANGE_POLL_INTERVAL_SECS
+        Poller->>Subs: distinct subscribed orchestrators
+        Poller->>Explorer: params history per subscribed orch
+        Poller->>Streams: insert TranscoderUpdate rows
+        Poller->>Streams: fetch unsent cut_change_events
+        Poller->>Subs: find subscribers by orch
+        Poller->>Explorer: get orchestrator profile
+        Poller->>DM: send per-event DM
+        Poller->>Subs: clear or increment dm_failure_count
+        Poller->>Streams: mark cut-change event sent
+    end
+```
+
+When an orchestrator is first observed by this poller, existing historical
+TranscoderUpdate rows are inserted as already sent. This keeps first deploys
+from backfilling old cut-change DMs. New `/subscribe` calls also seed existing
+cut history immediately, before the next poller tick, for the same reason.
 
 ## Persistence model
 
@@ -377,6 +411,7 @@ Important semantics:
 | `reward_events` | persisted `Reward` events with DM sent watermark |
 | `delegator_events` | persisted `Bond`/`Unbond`/`Rebond` events with DM sent watermark |
 | `delegator_history` | first-seen marker for `(delegator, orch)` |
+| `cut_change_events` | persisted `TranscoderUpdate` rows with DM sent watermark |
 
 ### Why SQLite
 
@@ -407,6 +442,7 @@ Explorer endpoints used today:
 
 - `GET /api/v1/events` for `WinningTicketRedeemed`, `Reward`, `Bond`, `Unbond`, `Rebond`
 - `GET /api/v1/orchestrators/{address}`
+- `GET /api/v1/transcoders/{address}/params/history`
 - `GET /api/v1/orchestrators/{address}/delegators`
 - `GET /api/v1/gateways/{address}/profile`
 - `GET /api/v1/payouts/summary/{period}/{date}`
@@ -463,7 +499,7 @@ This keeps “what environment is required to boot” explicit and testable.
 - Migration failure: process exits during boot.
 - Explorer/API errors during scheduled work: iteration logs error; next tick retries.
 - Webhook send failure: rows remain unsent and are retried later.
-- DM `403`: increments failure counter and can auto-unsubscribe.
+- DM `403`: increments failure counter and can mark the subscription DM-blocked.
 - DM transient failure: logged, event still considered attempted to avoid duplicate sends.
 - Unexpected exit of a core webhook task (`event_poller`, `digest_poster`, `summary_poster`): `runtime.rs` logs the exit and shuts the process down rather than limping in an unknown partial state.
 - Commands-only infrastructure failures (most notably the Discord gateway runtime): logged and restarted in-process so webhook digests and summaries keep flowing.

@@ -55,9 +55,17 @@ pub async fn subscribe(
     if inserted {
         // Seed delegator_history for this orchestrator so the first Bond
         // event after subscription is correctly classified as new vs. stake
-        // change. Failures here are logged but don't block the subscription.
+        // change. Also seed existing cut-change history as sent, so future
+        // TranscoderUpdate rows after subscription can notify without
+        // backfilling old changes. Failures here are logged but don't block
+        // the subscription.
         if let Err(err) = crate::seed::seed_one(&data.explorer, &data.streams, &addr).await {
             tracing::warn!(?err, %addr, "subscribe: delegator_history seed failed");
+        }
+        if let Err(err) =
+            crate::seed::seed_cut_history_one(&data.explorer, &data.streams, &addr).await
+        {
+            tracing::warn!(?err, %addr, "subscribe: cut-change history seed failed");
         }
     }
 

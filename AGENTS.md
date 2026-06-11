@@ -16,6 +16,7 @@ Optional commands mode also enables:
 - slash commands for subscribing to orchestrators
 - reward DMs to subscribers
 - delegator-activity digest DMs
+- reward-cut / fee-share change DMs
 - Discord gateway connectivity for the bot user
 
 ## Where to read next
@@ -51,7 +52,7 @@ Optional commands mode also enables:
 │   ├── lib.rs                 # crate exports
 │   ├── config.rs              # boundary parse of env vars
 │   ├── runtime.rs             # composes domains, spawns loops
-│   ├── seed.rs                # cross-domain delegator-history seeding
+│   ├── seed.rs                # cross-domain subscription seeding
 │   ├── providers/             # cross-cutting: http, discord, db, clock
 │   └── domains/
 │       ├── explorer/          # types, client, service

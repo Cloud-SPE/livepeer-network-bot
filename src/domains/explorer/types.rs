@@ -13,7 +13,8 @@ pub use super::generated::types::{
     EventListResponse, EventRow, GatewayProfileRow, OrchDelegatorRow, OrchDelegatorsMeta,
     OrchDelegatorsResponse, OrchestratorProfileRow, PayoutLeaderboardMeta,
     PayoutLeaderboardResponse, PayoutLeaderboardRow, PayoutSummaryResponse, RewardLeaderboardMeta,
-    RewardLeaderboardResponse, RewardLeaderboardRow, ValuationInline,
+    RewardLeaderboardResponse, RewardLeaderboardRow, TranscoderParamsHistoryResponse,
+    TranscoderParamsRow, ValuationInline,
 };
 
 pub fn preferred_valuation(valuations: &[ValuationInline]) -> Option<&ValuationInline> {

@@ -9,7 +9,7 @@ use poise::serenity_prelude::{Colour, CreateEmbed, CreateMessage, Timestamp};
 
 use crate::domains::{
     explorer::types::OrchestratorProfileRow,
-    state::event_streams::{DelegatorEventRow, RewardEventRow},
+    state::event_streams::{CutChangeEventRow, DelegatorEventRow, RewardEventRow},
 };
 
 /// Reward event DM — fired per-event by the reward poller (004b).
@@ -43,6 +43,45 @@ pub fn build_reward_event_dm(
         .title("Reward earned")
         .description(description)
         .colour(Colour::from_rgb(0xff, 0xa5, 0x00))
+        .timestamp(Timestamp::from(event.block_timestamp));
+
+    if let Some(thumb) = orch.avatar_url.as_deref() {
+        embed = embed.thumbnail(thumb);
+    }
+
+    CreateMessage::new().embed(embed)
+}
+
+/// Cut-change DM — fired per TranscoderUpdate observed for a subscribed
+/// orchestrator.
+pub fn build_cut_change_dm(
+    orch: &OrchestratorProfileRow,
+    event: &CutChangeEventRow,
+) -> CreateMessage {
+    let orch_addr = &event.orch_address;
+    let orch_name = orch
+        .display_name
+        .clone()
+        .unwrap_or_else(|| orch_addr.clone());
+
+    let description = format!(
+        "[**{}**](https://tools.livepeer.cloud/orchestrator/{}) updated its cuts:\n\n\
+         Reward cut: **{}** (orchestrator)\n\
+         Fee Share: **{}** (delegators)\n\
+         Fee Cut: **{}** (orchestrator)\n\n\
+         [View transaction](https://arbiscan.io/tx/{})",
+        orch_name,
+        orch_addr,
+        format_percent(&event.reward_cut_percent),
+        format_percent(&event.fee_share_percent),
+        format_percent(&event.fee_cut_percent),
+        event.tx_hash,
+    );
+
+    let mut embed = CreateEmbed::new()
+        .title("Cut change")
+        .description(description)
+        .colour(Colour::from_rgb(0x96, 0x96, 0x96))
         .timestamp(Timestamp::from(event.block_timestamp));
 
     if let Some(thumb) = orch.avatar_url.as_deref() {
@@ -161,4 +200,8 @@ fn short_addr(addr: &str) -> String {
 
 fn parse_decimal(s: Option<&str>) -> f64 {
     s.and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0)
+}
+
+fn format_percent(raw: &str) -> String {
+    format!("{:.2}%", parse_decimal(Some(raw)))
 }

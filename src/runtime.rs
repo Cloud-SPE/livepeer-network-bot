@@ -8,8 +8,8 @@ use crate::{
     domains::{
         explorer::client::ExplorerClient,
         scheduler::{
-            delegator_poller, digest_poster, event_poller, reward_poller, subscriber_digest_poster,
-            summary_poster,
+            cut_change_poller, delegator_poller, digest_poster, event_poller, reward_poller,
+            subscriber_digest_poster, summary_poster,
         },
         state::{event_streams::EventStreamsRepo, repo::SqliteStateRepo},
         subscriptions::repo::SqliteSubscriptionsRepo,
@@ -77,6 +77,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         let failure_threshold = commands.dm_failure_auto_unsub;
         let reward_interval = config.reward_poll_interval;
         let delegator_interval = config.delegator_poll_interval;
+        let cut_change_interval = config.cut_change_poll_interval;
 
         // Seed delegator_history for every orch with an existing subscriber
         // before the pollers start. Without this, the first Bond observed
@@ -127,6 +128,24 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let streams = streams.clone();
             let subscriptions = subscriptions.clone();
             let dm = dm.clone();
+            tokio::spawn(async move {
+                cut_change_poller::run(
+                    explorer,
+                    streams,
+                    subscriptions,
+                    dm,
+                    failure_threshold,
+                    cut_change_interval,
+                )
+                .await;
+            });
+        }
+
+        {
+            let explorer = explorer.clone();
+            let streams = streams.clone();
+            let subscriptions = subscriptions.clone();
+            let dm = dm.clone();
             let window = config.subscriber_digest_interval;
             tokio::spawn(async move {
                 subscriber_digest_poster::run(
@@ -167,7 +186,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
 
         tracing::info!(
-            "subscriptions enabled (gateway + reward poller + delegator poller + subscriber digest); webhook core remains up if commands tasks fail"
+            "subscriptions enabled (gateway + reward poller + delegator poller + cut-change poller + subscriber digest); webhook core remains up if commands tasks fail"
         );
     } else {
         tracing::info!(

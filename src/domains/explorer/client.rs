@@ -5,7 +5,7 @@ use url::Url;
 use super::types::{
     Cadence, EventListResponse, EventRow, GatewayProfileRow, OrchDelegatorsResponse,
     OrchestratorProfileRow, PayoutLeaderboardResponse, PayoutSummaryResponse,
-    RewardLeaderboardResponse,
+    RewardLeaderboardResponse, TranscoderParamsHistoryResponse,
 };
 
 #[derive(Clone, Debug)]
@@ -155,6 +155,18 @@ impl ExplorerClient {
                 q.append_pair("cursor", c);
             }
         }
+        let resp = self.client.get(url).send().await?.error_for_status()?;
+        Ok(resp.json().await?)
+    }
+
+    pub async fn transcoder_params_history(
+        &self,
+        address: &str,
+        limit: u32,
+    ) -> anyhow::Result<TranscoderParamsHistoryResponse> {
+        let mut url = self.url(&format!("api/v1/transcoders/{address}/params/history"))?;
+        url.query_pairs_mut()
+            .append_pair("limit", &limit.to_string());
         let resp = self.client.get(url).send().await?.error_for_status()?;
         Ok(resp.json().await?)
     }
