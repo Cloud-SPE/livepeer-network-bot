@@ -27,8 +27,15 @@ pub async fn run<N: Notifier>(
     loop {
         tick.tick().await;
         for cadence in [Cadence::Daily, Cadence::Weekly, Cadence::Monthly] {
-            if let Err(err) =
-                maybe_post(&explorer, notifier.as_ref(), &state, cadence, &readiness, &metrics).await
+            if let Err(err) = maybe_post(
+                &explorer,
+                notifier.as_ref(),
+                &state,
+                cadence,
+                &readiness,
+                &metrics,
+            )
+            .await
             {
                 tracing::error!(?err, ?cadence, "summary poster iteration failed");
             }
@@ -119,8 +126,7 @@ async fn maybe_post<N: Notifier>(
             .await?;
 
         if !past_deadline {
-            let hours_since_close =
-                (now - period_close).num_minutes() as f64 / 60.0;
+            let hours_since_close = (now - period_close).num_minutes() as f64 / 60.0;
             tracing::info!(
                 ?cadence, %period_date,
                 enrichment_ok, crosscheck_ok, stable,
