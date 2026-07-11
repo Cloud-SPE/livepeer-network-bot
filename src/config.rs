@@ -29,6 +29,9 @@ pub struct Config {
     pub http_timeout: Duration,
     pub user_agent: String,
     pub commands: Option<CommandsConfig>,
+    /// Optional bind address for the Prometheus /metrics + /health endpoint
+    /// (e.g. `0.0.0.0:9300`). None disables it.
+    pub metrics_bind: Option<String>,
 }
 
 /// Configuration for the slash-command runtime. `None` means commands are
@@ -101,6 +104,9 @@ impl Config {
         let user_agent =
             std::env::var("USER_AGENT").unwrap_or_else(|_| "livepeer-payout-bot/0.1".into());
 
+        // Optional Prometheus /metrics + /health endpoint. Unset = disabled.
+        let metrics_bind = std::env::var("METRICS_BIND").ok().filter(|s| !s.is_empty());
+
         let commands = if bool_var("COMMANDS_ENABLED", false)? {
             Some(CommandsConfig::from_env()?)
         } else {
@@ -124,6 +130,7 @@ impl Config {
             http_timeout,
             user_agent,
             commands,
+            metrics_bind,
         })
     }
 }

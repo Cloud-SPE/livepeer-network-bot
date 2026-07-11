@@ -35,6 +35,17 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let streams = Arc::new(EventStreamsRepo::new(pool.clone()));
     let subscriptions = Arc::new(SqliteSubscriptionsRepo::new(pool));
 
+    let metrics = Arc::new(crate::providers::metrics::Metrics::new());
+    if let Some(bind) = config.metrics_bind.clone() {
+        let metrics = metrics.clone();
+        let state = state.clone();
+        // Detached (NOT in `tasks`): a metrics bind failure must not trip the
+        // JoinSet teardown below and take the whole bot down with it.
+        tokio::spawn(async move {
+            crate::providers::metrics::serve(bind, metrics, state).await;
+        });
+    }
+
     let mut tasks = tokio::task::JoinSet::new();
 
     {
@@ -62,8 +73,9 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             let state = state.clone();
             let interval = config.summary_poll_interval;
             let readiness = config.summary_readiness.clone();
+            let metrics = metrics.clone();
             tasks.spawn(async move {
-                summary_poster::run(explorer, notifier, state, interval, readiness).await;
+                summary_poster::run(explorer, notifier, state, interval, readiness, metrics).await;
             });
         }
     } else {

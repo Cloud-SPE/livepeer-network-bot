@@ -4,3 +4,4 @@ pub mod discord;
 pub mod discord_bot;
 pub mod discord_gateway;
 pub mod http;
+pub mod metrics;

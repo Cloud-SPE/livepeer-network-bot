@@ -1,6 +1,11 @@
+use std::time::Duration;
+
 use chrono::NaiveDate;
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use url::Url;
+
+/// Max attempts for a GET before surfacing the error (1 initial + 2 retries).
+const MAX_GET_ATTEMPTS: u32 = 3;
 
 use super::types::{
     Cadence, EventListResponse, EventRow, GatewayProfileRow, OrchDelegatorsResponse,
@@ -46,6 +51,47 @@ impl ExplorerClient {
         Ok(self.base_url.join(path)?)
     }
 
+    /// GET a URL and deserialize the JSON body, retrying transient failures.
+    ///
+    /// The explorer API (behind a Cloudflare tunnel) intermittently returns
+    /// 502/500 or times out under DB load. Those blips used to abort the whole
+    /// caller (e.g. a summary poll or the event poller) via `?`. We now retry
+    /// 5xx / 429 / connect / timeout failures a couple of times with a short
+    /// exponential backoff. Non-retryable 4xx and JSON-decode errors surface
+    /// immediately.
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, url: Url) -> anyhow::Result<T> {
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            match self.client.get(url.clone()).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let retryable_status =
+                        status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS;
+                    if retryable_status && attempt < MAX_GET_ATTEMPTS {
+                        let backoff = Duration::from_millis(300 * 2u64.pow(attempt - 1));
+                        tracing::warn!(url = %url, attempt, %status, "explorer GET returned retryable status; retrying");
+                        tokio::time::sleep(backoff).await;
+                        continue;
+                    }
+                    // Non-retryable status, or out of attempts: surface it.
+                    let resp = resp.error_for_status()?;
+                    return Ok(resp.json().await?);
+                }
+                Err(err)
+                    if attempt < MAX_GET_ATTEMPTS
+                        && (err.is_timeout() || err.is_connect() || err.is_request()) =>
+                {
+                    let backoff = Duration::from_millis(300 * 2u64.pow(attempt - 1));
+                    tracing::warn!(url = %url, attempt, error = %err, "explorer GET transport error; retrying");
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+
     pub async fn list_winning_tickets(
         &self,
         cursor: Option<&str>,
@@ -67,14 +113,7 @@ impl ExplorerClient {
             q.append_pair("with_valuations", "true");
             q.append_pair("limit", "10");
         }
-        let resp: EventListResponse = self
-            .client
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let resp: EventListResponse = self.get_json(url).await?;
         Ok(resp.data.into_iter().find(|ev| ev.tx_hash == tx_hash))
     }
 
@@ -96,22 +135,19 @@ impl ExplorerClient {
                 q.append_pair("cursor", c);
             }
         }
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        Ok(resp.json().await?)
+        self.get_json(url).await
     }
 
     pub async fn get_orchestrator(&self, address: &str) -> anyhow::Result<OrchestratorProfileRow> {
         let url = self.url(&format!("api/v1/orchestrators/{address}"))?;
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        let mut row: OrchestratorProfileRow = resp.json().await?;
+        let mut row: OrchestratorProfileRow = self.get_json(url).await?;
         row.avatar_url = absolutize_avatar(&self.base_url, row.avatar_url.take());
         Ok(row)
     }
 
     pub async fn get_gateway(&self, address: &str) -> anyhow::Result<GatewayProfileRow> {
         let url = self.url(&format!("api/v1/gateways/{address}/profile"))?;
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        let mut row: GatewayProfileRow = resp.json().await?;
+        let mut row: GatewayProfileRow = self.get_json(url).await?;
         row.avatar_url = absolutize_avatar(&self.base_url, row.avatar_url.take());
         Ok(row)
     }
@@ -128,8 +164,7 @@ impl ExplorerClient {
         );
         let mut url = self.url(&path)?;
         url.query_pairs_mut().append_pair("job_type", "both");
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        Ok(resp.json().await?)
+        self.get_json(url).await
     }
 
     pub async fn payout_leaderboard(
@@ -147,8 +182,7 @@ impl ExplorerClient {
             q.append_pair("sort", "commission_usd");
             q.append_pair("limit", &limit.to_string());
         }
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        Ok(resp.json().await?)
+        self.get_json(url).await
     }
 
     pub async fn rewards_leaderboard(
@@ -164,8 +198,7 @@ impl ExplorerClient {
             q.append_pair("to", &to.format("%Y-%m-%d").to_string());
             q.append_pair("limit", &limit.to_string());
         }
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        Ok(resp.json().await?)
+        self.get_json(url).await
     }
 
     pub async fn orchestrator_delegators(
@@ -182,8 +215,7 @@ impl ExplorerClient {
                 q.append_pair("cursor", c);
             }
         }
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        Ok(resp.json().await?)
+        self.get_json(url).await
     }
 
     pub async fn transcoder_params_history(
@@ -194,8 +226,7 @@ impl ExplorerClient {
         let mut url = self.url(&format!("api/v1/transcoders/{address}/params/history"))?;
         url.query_pairs_mut()
             .append_pair("limit", &limit.to_string());
-        let resp = self.client.get(url).send().await?.error_for_status()?;
-        Ok(resp.json().await?)
+        self.get_json(url).await
     }
 }
 

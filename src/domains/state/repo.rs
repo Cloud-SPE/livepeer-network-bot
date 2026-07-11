@@ -338,6 +338,21 @@ impl SqliteStateRepo {
         Ok(row.is_some())
     }
 
+    /// Unix time of the most recently posted summary for a `period`
+    /// ('daily'|'weekly'|'monthly'), or None if none has ever posted. Used by
+    /// the /metrics endpoint so the "last posted" gauge survives restarts.
+    pub async fn last_summary_posted_unix(&self, period: &str) -> anyhow::Result<Option<i64>> {
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT MAX(posted_at) FROM summary_watermarks WHERE period = ?")
+                .bind(period)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(raw
+            .as_deref()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp()))
+    }
+
     pub async fn mark_summary_posted(
         &self,
         cadence: Cadence,
