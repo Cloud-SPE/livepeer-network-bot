@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last updated: 2026-05-15
+Last updated: 2026-07-12
 
 This Privacy Policy explains how `livepeer-payout-bot` handles information when used through Discord.
 
@@ -37,7 +37,7 @@ Depending on how the app is used, the app may process the following categories o
 
 ### Public blockchain-derived and explorer-derived data
 
-- public Livepeer explorer data related to orchestrators, gateways, winning tickets, reward events, and delegator events
+- public Livepeer explorer data related to orchestrators, gateways, winning tickets, reward events, delegator events, orchestrator commission/cut changes, and per-round reward-call status
 
 The app is not designed to collect message content, passwords, payment information, or other sensitive personal information.
 
@@ -49,7 +49,7 @@ We use the information above to:
 - maintain user subscriptions
 - send requested direct-message notifications
 - post public digest and summary notifications to configured Discord channels
-- detect delivery failures and automatically unsubscribe unreachable users after repeated DM failures
+- detect delivery failures and flag unreachable subscriptions as DM-blocked after repeated DM failures, pausing delivery (the subscription is retained and delivery resumes automatically on the next successful DM)
 - operate, debug, secure, and improve the app
 
 ## 4. Legal Basis and Purpose
@@ -61,9 +61,11 @@ If and to the extent privacy law requires a legal basis, the app processes infor
 The app stores operational state in a local SQLite database. Depending on enabled features, stored data may include:
 
 - event cursors and delivery watermarks
-- public event records fetched from the explorer API
+- public event records fetched from the explorer API, including winning tickets, reward events, delegator activity, commission/cut-change history, and delegator first-seen markers
+- per-round reward-call watch state for orchestrators (alert progress, resolved/missed markers)
+- summary rollup snapshots used to gate periodic summary posts
 - subscription rows mapping Discord user IDs to orchestrator addresses
-- DM failure counters and related timestamps
+- DM failure counters, DM-blocked flags, and related timestamps
 
 The app may also emit structured logs during runtime.
 

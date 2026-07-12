@@ -2,11 +2,11 @@
 
 ## One-paragraph summary
 
-`livepeer-payout-bot` is a single Rust process that polls the Livepeer protocol explorer REST API, stores cursors and delivery state in SQLite, and sends Discord notifications. In its base shape it posts public webhook digests for `WinningTicketRedeemed` events plus daily/weekly/monthly network summaries. When `COMMANDS_ENABLED=true`, it also opens a Discord gateway connection, serves slash commands, stores user subscriptions, seeds subscription-scoped history, and delivers subscriber DMs for `Reward`, delegator activity, and reward-cut / fee-share changes.
+`livepeer-payout-bot` is a single Rust process that polls the Livepeer protocol explorer REST API, stores cursors and delivery state in SQLite, and sends Discord notifications. In its base shape it posts public webhook digests for `WinningTicketRedeemed` events plus daily/weekly/monthly network summaries. When `COMMANDS_ENABLED=true`, it also opens a Discord gateway connection, serves slash commands, stores user subscriptions, seeds subscription-scoped history, delivers subscriber DMs for `Reward`, delegator activity, and reward-cut / fee-share changes, and runs the reward-call watch (escalating "reward not called yet" DMs per round, a public delinquency digest at round lock, and a final missed-reward DM after round close). An optional Prometheus `/metrics` + `/health` endpoint is served when `METRICS_BIND` is set.
 
 ## Architectural goals
 
-- Keep upstream integration narrow: one explorer REST API contract, one SQLite file, one Discord surface.
+- Keep upstream integration narrow: one explorer REST API contract, one SQLite file, one Discord surface (public posts fan out to N configured webhooks through a single notifier).
 - Preserve deterministic delivery semantics: persist first, mark sent after successful delivery.
 - Make boundaries explicit and typed so contract drift fails in code review and tests, not at runtime.
 - Keep deployment simple: one binary, no external scheduler, no separate database service.
@@ -19,7 +19,7 @@ flowchart LR
     Explorer["Livepeer protocol explorer API"]
     Bot["livepeer-payout-bot"]
     Sqlite[("SQLite")]
-    Webhook["Discord webhook"]
+    Webhook["Discord webhooks (1..N, fan-out)"]
     Gateway["Discord gateway + bot HTTP API"]
     Users["Discord users"]
 
@@ -63,6 +63,8 @@ Includes everything from webhook-only mode, plus:
 - `delegator_poller`
 - `cut_change_poller`
 - `subscriber_digest_poster`
+- `reward_watch_poller` (unless `REWARD_WATCH_ENABLED=false`; its public
+  delinquency digest additionally honors `WEBHOOK_POST_ENABLED`)
 
 Used for interactive subscriptions and direct-message fan-out.
 
@@ -78,9 +80,11 @@ flowchart TD
         subgraph Providers["providers/"]
             Http["http.rs\nreqwest::Client"]
             Db["database.rs\nSQLite pool + migrations"]
-            Webhook["discord.rs\nwebhook notifier"]
+            Webhook["discord.rs\nwebhook fan-out notifier"]
             Dm["discord_bot.rs\nDM sender"]
             Gateway["discord_gateway.rs\npoise + serenity runtime"]
+            Clock["clock.rs\nClock trait"]
+            Metrics["metrics.rs\nPrometheus /metrics + /health"]
         end
 
         subgraph Domains["domains/"]
@@ -149,13 +153,15 @@ This split is deliberate:
 | `src/seed.rs` | idempotent cold-start and per-subscribe seeding for subscription-scoped history |
 | `src/providers/http.rs` | shared `reqwest::Client` |
 | `src/providers/database.rs` | opens SQLite, enables WAL, runs migrations |
-| `src/providers/discord.rs` | webhook sender with rate-limit awareness and retries |
+| `src/providers/discord.rs` | webhook sender with rate-limit awareness and retries; `FanOutNotifier` posts each payload to every configured webhook |
 | `src/providers/discord_bot.rs` | bot-authenticated DM sender |
 | `src/providers/discord_gateway.rs` | `poise` / `serenity` gateway runtime and command registration |
+| `src/providers/clock.rs` | `Clock` trait + `SystemClock` for testable time |
+| `src/providers/metrics.rs` | per-process counters and the Prometheus `/metrics` + `/health` server (gated on `METRICS_BIND`) |
 | `src/domains/explorer/` | generated API types and typed client methods |
-| `src/domains/state/` | repos for `events`, `cursors`, `summary_watermarks`, stream tables |
+| `src/domains/state/` | repos for `events`, `cursors`, `summary_watermarks`, `summary_snapshots`, the stream tables, and `reward_watch_state` (`reward_watch.rs`) |
 | `src/domains/subscriptions/` | repo for `subscriptions` table |
-| `src/domains/notify/` | webhook embed builders and DM message builders |
+| `src/domains/notify/` | webhook embed builders, DM message builders, and the `Notifier` trait (`service.rs`) |
 | `src/domains/scheduler/` | recurring pollers and posters |
 | `src/domains/commands/` | slash command handlers |
 | `migrations/` | append-only SQLite schema history |
@@ -183,9 +189,12 @@ sequenceDiagram
     Runtime->>DB: open SQLite + run migrations
     Runtime->>Runtime: construct clients/repos/providers
     Runtime->>Tasks: spawn always-on schedulers
+    opt METRICS_BIND set
+        Runtime->>Tasks: spawn detached /metrics + /health server
+    end
     alt COMMANDS_ENABLED=true
         Runtime->>Runtime: seed subscription history
-        Runtime->>Tasks: spawn reward/delegator/cut-change/subscriber tasks
+        Runtime->>Tasks: spawn reward/delegator/cut-change/subscriber/reward-watch tasks
         Runtime->>Tasks: spawn Discord gateway runtime
     end
     Runtime->>Runtime: wait for ctrl-c or unexpected core-task exit
@@ -251,9 +260,18 @@ sequenceDiagram
         alt not yet posted
             Summary->>Explorer: GET /payouts/summary/{period}/{date}
             Summary->>Explorer: GET /payouts/leaderboard
-            Summary->>Notify: build summary embed
-            Summary->>Discord: POST webhook
-            Summary->>State: insert summary watermark
+            Summary->>State: compare against summary_snapshots (readiness gate)
+            alt ready (settled + priced + stable)
+                Summary->>Notify: build summary embed
+                Summary->>Discord: POST webhook
+                Summary->>State: insert summary watermark
+            else past SUMMARY_MAX_DEFER_SECS
+                Summary->>Notify: build summary embed with "incomplete" footer
+                Summary->>Discord: POST webhook
+                Summary->>State: insert summary watermark
+            else not ready
+                Summary->>State: upsert summary_snapshots, defer to next poll
+            end
         end
     end
 ```
@@ -262,6 +280,16 @@ Important semantics:
 
 - Summaries always cover the last fully closed UTC period.
 - Watermarks prevent duplicate daily/weekly/monthly posts across restarts.
+- A readiness gate (`SummaryReadiness` in `config.rs`) keeps rollups from
+  posting before the explorer has finished indexing/pricing the period: a
+  period is never posted before `period_end + SUMMARY_SETTLE_<CADENCE>_SECS`,
+  must be fully priced, must not lag the bot's own ingested event count, and
+  must be stable across two consecutive polls (compared via
+  `summary_snapshots`).
+- `SUMMARY_MAX_DEFER_SECS` is the backstop: past it, the rollup posts anyway
+  with an "incomplete" footer rather than being skipped silently.
+- Posts and deferrals are counted in the process metrics
+  (`record_post` / `record_deferral`).
 
 ### Subscription commands and DM delivery
 
@@ -398,6 +426,69 @@ TranscoderUpdate rows are inserted as already sent. This keeps first deploys
 from backfilling old cut-change DMs. New `/subscribe` calls also seed existing
 cut history immediately, before the next poller tick, for the same reason.
 
+#### Reward-call watch
+
+The inverse of the reward DM: escalating notice when a subscribed
+orchestrator has **not** called reward as the round progresses.
+
+```mermaid
+sequenceDiagram
+    participant Watch as reward_watch_poller
+    participant Explorer as Explorer API
+    participant WatchRepo as RewardWatchRepo
+    participant State as SqliteStateRepo
+    participant Subs as SqliteSubscriptionsRepo
+    participant DM as BotDmSender
+    participant Webhook as Discord webhooks
+
+    loop every REWARD_WATCH_POLL_INTERVAL_SECS
+        Watch->>Explorer: GET /rounds (current round + started_at)
+        Watch->>Watch: derive round progress from started_at
+        Watch->>Explorer: GET /rounds/{prev}/events?kinds=Reward
+        opt prev round closed (to_block set) and not yet processed
+            Watch->>Subs: distinct subscribed orchestrators
+            Watch->>DM: missed-reward DM per delinquent active orch
+            Watch->>WatchRepo: mark missed_notified, prune old rounds
+            Watch->>State: advance reward_watch_missed_done cursor
+        end
+        Watch->>Explorer: GET /rounds/{current}/events?kinds=Reward
+        Watch->>WatchRepo: mark rewarded orchs resolved
+        opt past first-alert threshold
+            Watch->>Subs: find subscribers per delinquent active orch
+            Watch->>DM: ladder DM when alerts_sent < rungs due
+            Watch->>WatchRepo: set alerts_sent = rungs due
+        end
+        opt past digest threshold and not yet posted this round
+            Watch->>Explorer: GET /orchestrators?active_only=true (full set)
+            Watch->>Webhook: post delinquency digest (all active non-rewarded)
+            Watch->>State: advance reward_watch_digest cursor
+        end
+    end
+```
+
+Important semantics:
+
+- Thresholds are percentages of round completion. Progress is derived from
+  the round's `started_at` timestamp and `ROUND_LENGTH_BLOCKS` (6377) fixed
+  12-second Ethereum L1 blocks; explorer block numbers are Arbitrum L2 and
+  are never mixed with the L1 round length.
+- Ladder DMs fire at `REWARD_WATCH_FIRST_ALERT_PCT` (default 25%), then
+  every `REWARD_WATCH_REALERT_STEP_PCT` (default 10%). `alerts_sent` in
+  `reward_watch_state` stores the rung count, so restarts and missed ticks
+  produce at most one catch-up DM, never a burst.
+- The public digest posts once per round at `REWARD_WATCH_DIGEST_PCT`
+  (default 90%, the protocol lock point) and covers ALL active
+  orchestrators, not just subscribed ones, sorted by stake at risk.
+- The missed-reward DM is deferred until the explorer has indexed past the
+  round boundary (`to_block` set on the closed round's events), so indexing
+  lag cannot produce a false "missed" verdict. Only the most recently closed
+  round is reconciled; the cursor initializes to "previous round handled" on
+  first deploy so nobody is alerted about rounds the bot never watched.
+- Inactive orchestrators are skipped in both DM and digest paths — they are
+  not expected to call reward.
+- State is keyed by `(round, orch_address)`, so per-round reset is
+  automatic; rows older than 8 rounds are pruned.
+
 ## Persistence model
 
 ### Tables
@@ -405,13 +496,15 @@ cut history immediately, before the next poller tick, for the same reason.
 | Table | Purpose |
 |---|---|
 | `events` | persisted `WinningTicketRedeemed` rows plus webhook sent watermark |
-| `cursors` | named opaque explorer cursors for pollers |
+| `cursors` | named opaque explorer cursors for pollers (also the reward-watch `reward_watch_digest` / `reward_watch_missed_done` round markers) |
 | `summary_watermarks` | one row per posted closed period |
+| `summary_snapshots` | last-observed rollup values per period, for the summary readiness stability check |
 | `subscriptions` | `(discord_user_id, orchestrator_address)` pairs and DM failure counters |
 | `reward_events` | persisted `Reward` events with DM sent watermark |
 | `delegator_events` | persisted `Bond`/`Unbond`/`Rebond` events with DM sent watermark |
 | `delegator_history` | first-seen marker for `(delegator, orch)` |
 | `cut_change_events` | persisted `TranscoderUpdate` rows with DM sent watermark |
+| `reward_watch_state` | per-`(round, orch_address)` reward-call watch progress: `alerts_sent`, `resolved_at`, `missed_notified_at` |
 
 ### Why SQLite
 
@@ -441,6 +534,7 @@ Boundary rules:
 Explorer endpoints used today:
 
 - `GET /api/v1/events` for `WinningTicketRedeemed`, `Reward`, `Bond`, `Unbond`, `Rebond`
+- `GET /api/v1/orchestrators` (paginated list, `active_only` for the active set)
 - `GET /api/v1/orchestrators/{address}`
 - `GET /api/v1/transcoders/{address}/params/history`
 - `GET /api/v1/orchestrators/{address}/delegators`
@@ -448,6 +542,8 @@ Explorer endpoints used today:
 - `GET /api/v1/payouts/summary/{period}/{date}`
 - `GET /api/v1/payouts/leaderboard`
 - `GET /api/v1/rewards/leaderboard`
+- `GET /api/v1/rounds` (current round and its `started_at`/`started_block`)
+- `GET /api/v1/rounds/{round}/events` (per-round `Reward` events; `to_block` signals a closed, fully indexed round)
 
 ## Discord boundary
 
@@ -455,9 +551,15 @@ Two delivery channels exist on purpose.
 
 ### Webhook delivery
 
-Used for public digest and summary embeds.
+Used for public digest, summary, and reward-call delinquency embeds.
 
 - Implemented in `src/providers/discord.rs`
+- `DISCORD_WEBHOOK_URL` accepts a comma-separated list; `FanOutNotifier`
+  posts each payload to every configured webhook (one per server channel),
+  each with its own rate-limit bucket
+- Fan-out is best-effort per webhook: `send` returns `Ok` if at least one
+  webhook accepted the payload, so a permanently-broken webhook misses
+  messages rather than blocking or duplicating to the healthy ones
 - Shared `reqwest::Client`
 - Bucket-aware rate limiting based on Discord response headers
 - Retries bounded 429s and 5xx responses
@@ -489,6 +591,10 @@ Properties:
 - required values fail fast with descriptive errors
 - durations are parsed once into `std::time::Duration`
 - command-mode config is grouped into `CommandsConfig`
+- summary readiness thresholds are grouped into `SummaryReadiness`
+- reward-call watch knobs are grouped into `RewardWatchConfig` (percent
+  thresholds validated at parse time)
+- `METRICS_BIND` is optional; unset disables the metrics endpoint
 - empty or invalid optional command values still fail when commands mode is enabled
 
 This keeps “what environment is required to boot” explicit and testable.

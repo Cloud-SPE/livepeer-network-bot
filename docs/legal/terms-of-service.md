@@ -1,6 +1,6 @@
 # Terms of Service
 
-Last updated: 2026-05-15
+Last updated: 2026-07-12
 
 These Terms of Service govern use of the `livepeer-payout-bot` Discord application and any related notification features, including public webhook posts, slash commands, and direct-message subscription features.
 
@@ -10,10 +10,10 @@ By installing, accessing, or using the app, you agree to these terms.
 
 The app reads publicly available data from the Livepeer protocol explorer API and uses that data to:
 
-- post payout digest and summary messages to Discord channels through configured webhooks
+- post payout digest, summary, and reward-call delinquency messages to Discord channels through configured webhooks
 - provide slash commands related to Livepeer orchestrators
 - allow users to subscribe to orchestrator-specific notifications
-- send direct-message notifications about reward and delegator activity
+- send direct-message notifications about reward activity, delegator activity, commission/cut changes, and pending or missed per-round reward calls
 
 The app is informational only. It is not a brokerage service, wallet, custodian, validator operator, or financial advisor.
 
