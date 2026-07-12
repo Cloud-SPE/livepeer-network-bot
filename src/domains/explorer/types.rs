@@ -11,10 +11,11 @@
 
 pub use super::generated::types::{
     EventListResponse, EventRow, GatewayProfileRow, OrchDelegatorRow, OrchDelegatorsMeta,
-    OrchDelegatorsResponse, OrchestratorProfileRow, PayoutLeaderboardMeta,
-    PayoutLeaderboardResponse, PayoutLeaderboardRow, PayoutSummaryResponse, RewardLeaderboardMeta,
-    RewardLeaderboardResponse, RewardLeaderboardRow, TranscoderParamsHistoryResponse,
-    TranscoderParamsRow, ValuationInline,
+    OrchDelegatorsResponse, OrchestratorListResponse, OrchestratorProfileRow,
+    PayoutLeaderboardMeta, PayoutLeaderboardResponse, PayoutLeaderboardRow, PayoutSummaryResponse,
+    ProfileListMeta, RewardLeaderboardMeta, RewardLeaderboardResponse, RewardLeaderboardRow,
+    RoundEventRow, RoundEventsMeta, RoundEventsResponse, RoundIndexRow, RoundsIndexMeta,
+    RoundsIndexResponse, TranscoderParamsHistoryResponse, TranscoderParamsRow, ValuationInline,
 };
 
 pub fn preferred_valuation(valuations: &[ValuationInline]) -> Option<&ValuationInline> {

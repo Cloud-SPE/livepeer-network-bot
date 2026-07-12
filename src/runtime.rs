@@ -9,9 +9,11 @@ use crate::{
         explorer::client::ExplorerClient,
         scheduler::{
             cut_change_poller, delegator_poller, digest_poster, event_poller, reward_poller,
-            subscriber_digest_poster, summary_poster,
+            reward_watch_poller, subscriber_digest_poster, summary_poster,
         },
-        state::{event_streams::EventStreamsRepo, repo::SqliteStateRepo},
+        state::{
+            event_streams::EventStreamsRepo, repo::SqliteStateRepo, reward_watch::RewardWatchRepo,
+        },
         subscriptions::repo::SqliteSubscriptionsRepo,
     },
     providers::{
@@ -33,6 +35,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     ));
     let state = Arc::new(SqliteStateRepo::new(pool.clone()));
     let streams = Arc::new(EventStreamsRepo::new(pool.clone()));
+    let reward_watch = Arc::new(RewardWatchRepo::new(pool.clone()));
     let subscriptions = Arc::new(SqliteSubscriptionsRepo::new(pool));
 
     let metrics = Arc::new(crate::providers::metrics::Metrics::new());
@@ -172,6 +175,40 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
             });
         }
 
+        if config.reward_watch.enabled {
+            let explorer = explorer.clone();
+            let subscriptions = subscriptions.clone();
+            let reward_watch = reward_watch.clone();
+            let state = state.clone();
+            let notifier = notifier.clone();
+            let dm = dm.clone();
+            let metrics = metrics.clone();
+            let settings = reward_watch_poller::RewardWatchSettings {
+                poll_interval: config.reward_watch.poll_interval,
+                first_alert_pct: config.reward_watch.first_alert_pct,
+                realert_step_pct: config.reward_watch.realert_step_pct,
+                digest_pct: config.reward_watch.digest_pct,
+                round_length_blocks: config.reward_watch.round_length_blocks,
+                post_digest: config.webhook_post_enabled,
+                failure_threshold,
+            };
+            tokio::spawn(async move {
+                reward_watch_poller::run(
+                    explorer,
+                    subscriptions,
+                    reward_watch,
+                    state,
+                    notifier,
+                    dm,
+                    metrics,
+                    settings,
+                )
+                .await;
+            });
+        } else {
+            tracing::info!("reward watch poller disabled (REWARD_WATCH_ENABLED=false)");
+        }
+
         {
             let explorer = explorer.clone();
             let subscriptions = subscriptions.clone();
@@ -198,7 +235,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
 
         tracing::info!(
-            "subscriptions enabled (gateway + reward poller + delegator poller + cut-change poller + subscriber digest); webhook core remains up if commands tasks fail"
+            "subscriptions enabled (gateway + reward poller + delegator poller + cut-change poller + subscriber digest + reward watch); webhook core remains up if commands tasks fail"
         );
     } else {
         tracing::info!(
