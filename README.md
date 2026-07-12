@@ -36,7 +36,7 @@ Rust service that watches the Livepeer protocol explorer API, persists event sta
 The app has two deployment shapes:
 
 - `webhook-only` mode posts public-channel payout digests and daily/weekly/monthly network summaries to a Discord webhook.
-- `commands-enabled` mode adds a Discord bot user, slash commands, per-user orchestrator subscriptions, reward DMs, and delegator-activity digest DMs.
+- `commands-enabled` mode adds a Discord bot user, slash commands, per-user orchestrator subscriptions, reward DMs, delegator-activity digest DMs, reward-cut / fee-share change DMs, and the reward-call watch (pending/missed reward DMs plus a public delinquency digest).
 
 Detailed architecture lives in [docs/design-docs/architecture.md](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/docs/design-docs/architecture.md). Core repo rules live in [docs/design-docs/core-beliefs.md](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/docs/design-docs/core-beliefs.md).
 
@@ -49,7 +49,8 @@ Core responsibilities:
 - Poll `WinningTicketRedeemed` events and post orchestrator payout digests.
 - Post closed-period network summaries for daily, weekly, and monthly windows.
 - Optionally expose Discord slash commands for subscribing to orchestrators.
-- Optionally DM subscribers about `Reward`, `Bond`, `Unbond`, and `Rebond` activity.
+- Optionally DM subscribers about `Reward`, `Bond`, `Unbond`, `Rebond`, and `TranscoderUpdate` (reward-cut / fee-share change) activity.
+- Optionally watch reward calls per round: DM subscribers when a subscribed orchestrator has not called reward as the round progresses, post a public digest of all delinquent active orchestrators when the round locks, and DM a final missed-reward notice after the round closes.
 - Persist cursors, dedup state, delivery watermarks, and subscription data in SQLite.
 
 ## High-level features
@@ -59,7 +60,8 @@ Core responsibilities:
 - Append-only persistence: migrations are additive, cursors are explicit, and delivery flags are written after successful sends.
 - Contract-locked embeds: webhook and DM payloads are snapshot-tested in [tests/embeds.rs](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/tests/embeds.rs).
 - Architecture guardrails: domain import rules are enforced in [tests/architecture.rs](/home/mazup/git-repos/livepeer-cloud-spe/livepeer-network-bot/tests/architecture.rs).
-- Optional interactive mode: slash commands, DM delivery, and cold-start seeding are enabled only when `COMMANDS_ENABLED=true`.
+- Optional interactive mode: slash commands, DM delivery, the reward-call watch, and cold-start seeding are enabled only when `COMMANDS_ENABLED=true`.
+- Optional observability: a Prometheus `/metrics` + `/health` endpoint is served when `METRICS_BIND` is set.
 
 ## Project organization
 
@@ -162,9 +164,14 @@ Optional timing and transport knobs:
 - `DIGEST_WINDOW_SECS`
 - `DIGEST_FETCH_LIMIT`
 - `SUMMARY_POLL_INTERVAL_SECS`
+- `SUMMARY_SETTLE_DAILY_SECS` / `SUMMARY_SETTLE_WEEKLY_SECS` /
+  `SUMMARY_SETTLE_MONTHLY_SECS` / `SUMMARY_MAX_DEFER_SECS` (summary
+  readiness gating; see `.env.example`)
 - `HTTP_TIMEOUT_SECS`
 - `RUST_LOG`
 - `USER_AGENT`
+- `METRICS_BIND` (e.g. `0.0.0.0:9300`; serves Prometheus `/metrics` +
+  `/health`, disabled when unset)
 
 Optional safety flag:
 
@@ -184,7 +191,12 @@ Additional variables when `COMMANDS_ENABLED=true`:
 - `DM_FAILURE_AUTO_UNSUB`
 - `REWARD_POLL_INTERVAL_SECS`
 - `DELEGATOR_POLL_INTERVAL_SECS`
+- `CUT_CHANGE_POLL_INTERVAL_SECS`
 - `SUBSCRIBER_DIGEST_INTERVAL_SECS`
+- `REWARD_WATCH_ENABLED` / `REWARD_WATCH_POLL_INTERVAL_SECS` /
+  `REWARD_WATCH_FIRST_ALERT_PCT` / `REWARD_WATCH_REALERT_STEP_PCT` /
+  `REWARD_WATCH_DIGEST_PCT` / `ROUND_LENGTH_BLOCKS` (reward-call watch;
+  see `.env.example`)
 
 ## Runtime model
 
@@ -198,8 +210,12 @@ Additional variables when `COMMANDS_ENABLED=true`:
   - startup delegator-history seed
   - `reward_poller`
   - `delegator_poller`
+  - `cut_change_poller`
   - `subscriber_digest_poster`
+  - `reward_watch_poller` (unless `REWARD_WATCH_ENABLED=false`)
   - Discord gateway / slash command runtime
+- Detached (never fatal): the Prometheus `/metrics` + `/health` server,
+  spawned only when `METRICS_BIND` is set.
 
 The process exits on `SIGINT`/`SIGTERM` or when one of the always-on webhook
 tasks dies unexpectedly. In commands-enabled mode, the Discord gateway is

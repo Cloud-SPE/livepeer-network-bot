@@ -17,6 +17,8 @@ Optional commands mode also enables:
 - reward DMs to subscribers
 - delegator-activity digest DMs
 - reward-cut / fee-share change DMs
+- reward-call watch: pending/missed reward DMs per round plus a public
+  delinquency digest of active orchestrators when the round locks
 - Discord gateway connectivity for the bot user
 
 ## Where to read next

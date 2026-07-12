@@ -4,7 +4,7 @@ These are the rules. They are short, mechanical, and enforced — by lints, stru
 
 ## 1. Parse at the boundary, never YOLO-probe
 
-Every byte that crosses an external boundary (explorer API, env var, Discord response, SQLite row) is parsed into a typed struct before it touches business logic. `serde_json::Value` does not appear past `src/domains/explorer/client.rs`. Env vars are read once in `src/config.rs`; nothing else calls `std::env::var`.
+Every byte that crosses an external boundary (explorer API, env var, Discord response, SQLite row) is parsed into a typed struct before it touches business logic. Inbound explorer JSON never leaves `src/domains/explorer/client.rs` as `serde_json::Value`; the one sanctioned `Value` use is **outbound** — webhook embed payloads built in `notify/embed.rs` and carried by the `Notifier` trait, where the JSON itself is the product contract. Env vars are read once in `src/config.rs`; nothing else calls `std::env::var`.
 
 ## 2. Domains are stratified — strict leaves do not know about each other
 
@@ -35,7 +35,7 @@ The Discord embed shapes in `docs/product-specs/messages.md` are byte-for-byte p
 
 ## 6. Startup is strict
 
-The binary fails loudly on bad config, missing migrations, or an unreachable explorer at boot. There is no "silent degraded mode." If something is wrong, we want to see it in logs immediately, not at 03:00 when a digest didn't post.
+The binary fails loudly on bad config or failed migrations at boot. There is no "silent degraded mode." Explorer availability is a runtime concern, not a boot gate: scheduled ticks log errors loudly and retry. If something is wrong, we want to see it in logs immediately, not at 03:00 when a digest didn't post.
 
 ## 7. State changes are append-only and idempotent
 

@@ -131,6 +131,7 @@ Commission: {orch_total_commission_eth:.4} ETH ({orch_total_commission_percent:.
 - `report_type_lower` is the lowercased version for the URL.
 - The leading whitespace inside the code blocks (`    ` and `        `) is intentional and preserved from backend-rs.
 - `{orch_total_percent}` and `{orch_total_commission_percent}` are computed client-side: `100.0 * orch_value / network_total`.
+- **Incomplete-backstop variant:** when the readiness gate's `SUMMARY_MAX_DEFER_SECS` backstop forces a post before the explorer finished indexing the period, a `footer.text` is added: `⚠️ Data may be incomplete — published before the explorer finished indexing this period.` The description body stays byte-for-byte identical to the normal path.
 
 ## URL conventions
 
@@ -247,9 +248,9 @@ Built with `serenity::all::CreateEmbed` (NOT `serde_json::Value`) because they a
 
 ### Per-command shape
 
-- **`/subscribe <orchestrator>`** — Title: `Subscribed` or `Already subscribed` or `Error`. Description includes the orchestrator's `display_name`, truncated address, and `N of CAP` usage line. Sends `error_reply` for invalid address, cap reached, or orchestrator-not-found.
+- **`/subscribe <orchestrator>`** — Title: `Subscribed` or `Already subscribed` or `Error`. On first subscribe the description is `Now following **{name}** (\`{short_addr}\`). You're subscribed to {N} of {CAP} orchestrators.` followed by a blank line and a DM-settings paragraph: `📩 Notifications arrive as DMs. Make sure we share a server and that **"Allow direct messages from server members"** is enabled, or I won't be able to reach you — /subscriptions shows delivery status.` The `Already subscribed` case is just `You're already following **{name}** (\`{short_addr}\`).` with no usage line. Sends `error_reply` for invalid address, cap reached, or orchestrator-not-found.
 - **`/unsubscribe <orchestrator>`** — Title: `Unsubscribed` or `Not subscribed` or `Error`. Description echoes the truncated address.
-- **`/subscriptions`** — Title: `Your subscriptions`. Description either lists each subscription as `• **{name}** — \`{short_addr}\`` or shows an empty-state line pointing at `/subscribe`. Lookups are best-effort: if the explorer lookup for a name fails, the address is shown instead so the list still renders.
+- **`/subscriptions`** — Title: `Your subscriptions`. Description opens with `You follow {N} of {CAP} orchestrators:` then lists each subscription as `• **{name}** — \`{short_addr}\``, with a trailing `  ⚠️ DM-blocked` marker on entries whose DMs are paused. When any entry is DM-blocked, a closing paragraph explains that the subscription is kept, notifications are paused, and delivery resumes automatically on the next successful DM. Empty state shows a line pointing at `/subscribe`. Lookups are best-effort: if the explorer lookup for a name fails, the address is shown instead so the list still renders.
 - **`/orchestrator delegators <orchestrator>`** — Title: `Delegators of {short_addr}`. Description lists top-10 delegators ranked by current stake (`pending_stake` when present and positive, otherwise `bonded_principal`), each line as `**#{rank}** \`{short_addr}\` — {LPT:.2} LPT ({pct:.2}%)`. Percentages are computed against the orchestrator profile's `total_stake`, not just the 10 displayed rows or the sum of fetched `bonded_principal` values. Footer line: `_Top N by stake; total stake: {LPT:.2} LPT_`.
 - **`/orchestrator rewards <orchestrator> <period>`** — Title: `Rewards · {short_addr}`. Description has the period label + date range, then `Reward events: N`, `Total distributed: X LPT ($Y)`, `Orchestrator cut: X LPT ($Y)`, `Delegators cut: X LPT`. Empty case: `No reward activity for {short_addr} in {period} ({from} – {to}).`
 - **`/orchestrator tickets <orchestrator> <period>`** — Title: `Tickets · {short_addr}`. Same shape as rewards but with ETH/USD on face value, commission, and delegators' share, plus distinct gateways count.
@@ -268,6 +269,79 @@ All addresses in command responses use `short_addr()` → `0x1234…5678`. The f
 - monthly → previous month, 1st through last day
 
 Source: `src/domains/commands/orchestrator.rs::period_window`.
+
+## 8. Reward-call pending DM (subscriber)
+
+Built with `serenity::all::CreateMessage` + `CreateEmbed`. Sent privately to each subscriber of an active orchestrator that has not called reward for the current round, once per ladder rung (`REWARD_WATCH_FIRST_ALERT_PCT`, then every `REWARD_WATCH_REALERT_STEP_PCT` of round completion). Source: `src/domains/notify/dm.rs::build_reward_watch_dm`.
+
+| Field | Value |
+|---|---|
+| `title` | `"Reward call pending"` |
+| `color` | `#e67e22` (orange) |
+| `timestamp` | send time (`Timestamp::now()`, not an event timestamp) |
+| `thumbnail.url` | orchestrator `avatar_url` if present, omitted otherwise |
+| `footer.text` | `"Reward-call status lags chain finality by up to ~25 minutes."` |
+| `description` | see below |
+
+### Description format
+
+```
+[**{orch_name}**](https://tools.livepeer.cloud/orchestrator/{orch_addr}) has **not called reward** for round **{round}** yet.
+
+Round progress: block ~**{est_block} of {round_length_blocks}** ({elapsed_pct:.0}% complete)
+Time left to call reward: **~{Hh Mm}**
+
+If no reward call lands before the round ends, delegators earn no inflation rewards from this orchestrator for the round.
+```
+
+- `{est_block}`/`{elapsed_pct}` are estimates derived from the round's `started_at` at 12s per L1 block; the remaining time renders as `{h}h {m}m`, or `{m}m` when under an hour.
+- Inactive orchestrators never trigger this DM.
+
+## 9. Reward call missed DM (subscriber)
+
+Built with `serenity::all::CreateMessage` + `CreateEmbed`. Sent privately once per `(round, orchestrator)` after a round closes without a reward call, deferred until the explorer has indexed past the round boundary. Source: `src/domains/notify/dm.rs::build_reward_missed_dm`.
+
+| Field | Value |
+|---|---|
+| `title` | `"Reward call missed"` |
+| `color` | `#cc3333` (red) |
+| `timestamp` | send time (`Timestamp::now()`) |
+| `thumbnail.url` | orchestrator `avatar_url` if present, omitted otherwise |
+| `description` | see below |
+
+### Description format
+
+```
+[**{orch_name}**](https://tools.livepeer.cloud/orchestrator/{orch_addr}) **did not call reward** during round **{round}**.
+
+Delegators earned no inflation rewards from this orchestrator for that round. The reward call for the new round is still available.
+```
+
+## 10. Reward-call delinquency digest (public webhook)
+
+A fourth public webhook embed, posted through the common envelope once per round when the round passes `REWARD_WATCH_DIGEST_PCT` (default 90%, the protocol lock point) and at least one active orchestrator has not called reward. Source: `src/domains/notify/embed.rs::build_reward_watch_digest`.
+
+| Field | Value |
+|---|---|
+| `color` | `0xE67E22` (orange) |
+| `title` | `"Reward calls pending — round locked"` |
+| `timestamp` | send time, RFC 3339 |
+| `description` | see below |
+
+### Description format
+
+```
+Round **{round}** is **{elapsed_pct:.0}% complete** (block ~{est_block} of {round_length_blocks}) and has entered its lock period. **{count}** active orchestrator{ has| s have} not called reward yet:
+
+• [**{name}**](https://tools.livepeer.cloud/orchestrator/{address}) — {total_stake:.0} LPT staked
+…
+
+Delegators to these orchestrators earn no inflation rewards for the round unless a reward call lands before it ends.
+```
+
+- Covers **all** active orchestrators (not just subscribed ones), sorted largest stake first.
+- At most 20 bullet lines; overflow renders as `…and {N} more`.
+- `{name}` falls back to the truncated address when the orchestrator has no `display_name`.
 
 ## Test expectations
 
