@@ -28,6 +28,7 @@ pub struct Config {
     pub subscriber_digest_interval: Duration,
     pub http_timeout: Duration,
     pub user_agent: String,
+    pub reward_watch: RewardWatchConfig,
     pub commands: Option<CommandsConfig>,
     /// Optional bind address for the Prometheus /metrics + /health endpoint
     /// (e.g. `0.0.0.0:9300`). None disables it.
@@ -46,6 +47,94 @@ pub struct CommandsConfig {
     pub max_subscriptions_per_user: u32,
     /// Consecutive DM 403 failures before a subscription is marked DM-blocked.
     pub dm_failure_auto_unsub: i64,
+}
+
+/// Reward-call watcher: DMs subscribers when a subscribed orchestrator has
+/// not called reward as the round progresses, posts a public digest of all
+/// delinquent active orchestrators when the round locks, and sends a final
+/// "missed" DM once the round closes without a reward call. Thresholds are
+/// percentages of round completion, derived from the round's `started_at`
+/// and the L1-block round length (rounds are `round_length_blocks` Ethereum
+/// L1 blocks at ~12s each, even though Livepeer events land on Arbitrum).
+/// Only runs when `COMMANDS_ENABLED=true`.
+#[derive(Debug, Clone)]
+pub struct RewardWatchConfig {
+    pub enabled: bool,
+    pub poll_interval: Duration,
+    /// First DM fires once the round is this % complete.
+    pub first_alert_pct: u32,
+    /// Follow-up DMs fire every additional % of round completion.
+    pub realert_step_pct: u32,
+    /// Public delinquency digest posts once the round is this % complete
+    /// (90% = the protocol's round-lock point).
+    pub digest_pct: u32,
+    /// Round length in Ethereum L1 blocks (protocol `roundLength`).
+    pub round_length_blocks: u64,
+}
+
+impl RewardWatchConfig {
+    fn from_env() -> Result<Self, ConfigError> {
+        let enabled = bool_var("REWARD_WATCH_ENABLED", true)?;
+        let poll_interval = secs_var("REWARD_WATCH_POLL_INTERVAL_SECS", 300)?;
+        let first_alert_pct = u32_var("REWARD_WATCH_FIRST_ALERT_PCT", 25)?;
+        let realert_step_pct = u32_var("REWARD_WATCH_REALERT_STEP_PCT", 10)?;
+        let digest_pct = u32_var("REWARD_WATCH_DIGEST_PCT", 90)?;
+        let round_length_blocks = std::env::var("ROUND_LENGTH_BLOCKS").map_or(Ok(6377), |raw| {
+            raw.parse::<u64>().map_err(|e| ConfigError::Invalid {
+                var: "ROUND_LENGTH_BLOCKS",
+                source: anyhow::Error::new(e),
+            })
+        })?;
+        validate_reward_watch(
+            first_alert_pct,
+            realert_step_pct,
+            digest_pct,
+            round_length_blocks,
+        )?;
+        Ok(Self {
+            enabled,
+            poll_interval,
+            first_alert_pct,
+            realert_step_pct,
+            digest_pct,
+            round_length_blocks,
+        })
+    }
+}
+
+fn validate_reward_watch(
+    first_alert_pct: u32,
+    realert_step_pct: u32,
+    digest_pct: u32,
+    round_length_blocks: u64,
+) -> Result<(), ConfigError> {
+    if first_alert_pct == 0 || first_alert_pct > 100 {
+        return Err(ConfigError::Invalid {
+            var: "REWARD_WATCH_FIRST_ALERT_PCT",
+            source: anyhow::anyhow!("must be between 1 and 100, got {first_alert_pct}"),
+        });
+    }
+    if realert_step_pct == 0 {
+        return Err(ConfigError::Invalid {
+            var: "REWARD_WATCH_REALERT_STEP_PCT",
+            source: anyhow::anyhow!("must be at least 1"),
+        });
+    }
+    if digest_pct < first_alert_pct || digest_pct > 100 {
+        return Err(ConfigError::Invalid {
+            var: "REWARD_WATCH_DIGEST_PCT",
+            source: anyhow::anyhow!(
+                "must be between REWARD_WATCH_FIRST_ALERT_PCT ({first_alert_pct}) and 100, got {digest_pct}"
+            ),
+        });
+    }
+    if round_length_blocks == 0 {
+        return Err(ConfigError::Invalid {
+            var: "ROUND_LENGTH_BLOCKS",
+            source: anyhow::anyhow!("must be at least 1"),
+        });
+    }
+    Ok(())
 }
 
 /// Gating thresholds that keep the daily/weekly/monthly summary poster from
@@ -107,6 +196,8 @@ impl Config {
         // Optional Prometheus /metrics + /health endpoint. Unset = disabled.
         let metrics_bind = std::env::var("METRICS_BIND").ok().filter(|s| !s.is_empty());
 
+        let reward_watch = RewardWatchConfig::from_env()?;
+
         let commands = if bool_var("COMMANDS_ENABLED", false)? {
             Some(CommandsConfig::from_env()?)
         } else {
@@ -129,6 +220,7 @@ impl Config {
             subscriber_digest_interval,
             http_timeout,
             user_agent,
+            reward_watch,
             commands,
             metrics_bind,
         })

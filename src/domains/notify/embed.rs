@@ -313,6 +313,78 @@ pub fn build_summary(
     })
 }
 
+/// One row of the public delinquency digest: an active orchestrator that has
+/// not called reward as the round locks.
+#[derive(Debug, Clone)]
+pub struct DelinquentOrch {
+    pub address: String,
+    pub display_name: Option<String>,
+    pub total_stake_lpt: f64,
+}
+
+const DIGEST_MAX_LINES: usize = 20;
+
+/// Public webhook digest posted once per round when it passes the lock point:
+/// every active orchestrator that has not yet called reward, largest stake
+/// first (the caller pre-sorts).
+pub fn build_reward_watch_digest(
+    round: i64,
+    progress: &crate::domains::scheduler::reward_watch_poller::RoundProgress,
+    delinquents: &[DelinquentOrch],
+) -> Value {
+    let mut description = format!(
+        "Round **{}** is **{:.0}% complete** (block ~{} of {}) and has entered its \
+         lock period. **{}** active orchestrator{} not called reward yet:\n\n",
+        round,
+        progress.elapsed_pct,
+        progress.est_block,
+        progress.round_length_blocks,
+        delinquents.len(),
+        if delinquents.len() == 1 {
+            " has"
+        } else {
+            "s have"
+        },
+    );
+
+    for orch in delinquents.iter().take(DIGEST_MAX_LINES) {
+        let name = orch
+            .display_name
+            .clone()
+            .unwrap_or_else(|| short_addr(&orch.address));
+        description.push_str(&format!(
+            "• [**{}**](https://tools.livepeer.cloud/orchestrator/{}) — {:.0} LPT staked\n",
+            name, orch.address, orch.total_stake_lpt,
+        ));
+    }
+    if delinquents.len() > DIGEST_MAX_LINES {
+        description.push_str(&format!(
+            "…and {} more\n",
+            delinquents.len() - DIGEST_MAX_LINES
+        ));
+    }
+    description.push_str(
+        "\nDelegators to these orchestrators earn no inflation rewards for the round \
+         unless a reward call lands before it ends.",
+    );
+
+    let embed = json!({
+        "color": 0xE67E22,
+        "title": "Reward calls pending — round locked",
+        "description": description,
+        "timestamp": rfc3339(Utc::now()),
+    });
+    envelope(embed)
+}
+
+fn short_addr(addr: &str) -> String {
+    if addr.len() >= 12 {
+        format!("{}…{}", &addr[..6], &addr[addr.len() - 4..])
+    } else {
+        addr.to_string()
+    }
+}
+
 fn envelope(embed: Value) -> Value {
     json!({
         "username": USERNAME,

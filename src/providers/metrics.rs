@@ -38,6 +38,9 @@ fn now_unix() -> u64 {
 pub struct Metrics {
     posts_total: [AtomicU64; 3],
     deferrals_total: [AtomicU64; 3],
+    reward_watch_alerts_total: AtomicU64,
+    reward_watch_missed_total: AtomicU64,
+    reward_watch_digests_total: AtomicU64,
     started_unix: u64,
 }
 
@@ -46,6 +49,9 @@ impl Metrics {
         Self {
             posts_total: Default::default(),
             deferrals_total: Default::default(),
+            reward_watch_alerts_total: Default::default(),
+            reward_watch_missed_total: Default::default(),
+            reward_watch_digests_total: Default::default(),
             started_unix: now_unix(),
         }
     }
@@ -58,6 +64,24 @@ impl Metrics {
     /// A poll evaluated `cadence` but deferred (not ready / not eligible).
     pub fn record_deferral(&self, cadence: Cadence) {
         self.deferrals_total[idx(cadence)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A "reward call pending" ladder DM fan-out went out for one orchestrator.
+    pub fn record_reward_watch_alert(&self) {
+        self.reward_watch_alerts_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A "missed reward" DM fan-out went out for one orchestrator.
+    pub fn record_reward_watch_missed(&self) {
+        self.reward_watch_missed_total
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The public delinquency digest was posted for a round.
+    pub fn record_reward_watch_digest(&self) {
+        self.reward_watch_digests_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -113,6 +137,27 @@ async fn render(metrics: &Metrics, state: &SqliteStateRepo) -> String {
             metrics.deferrals_total[idx(c)].load(Ordering::Relaxed)
         ));
     }
+
+    out.push_str("# HELP livepeer_bot_reward_watch_alerts_total Reward-call pending DM fan-outs since process start\n");
+    out.push_str("# TYPE livepeer_bot_reward_watch_alerts_total counter\n");
+    out.push_str(&format!(
+        "livepeer_bot_reward_watch_alerts_total {}\n",
+        metrics.reward_watch_alerts_total.load(Ordering::Relaxed)
+    ));
+
+    out.push_str("# HELP livepeer_bot_reward_watch_missed_total Missed-reward DM fan-outs since process start\n");
+    out.push_str("# TYPE livepeer_bot_reward_watch_missed_total counter\n");
+    out.push_str(&format!(
+        "livepeer_bot_reward_watch_missed_total {}\n",
+        metrics.reward_watch_missed_total.load(Ordering::Relaxed)
+    ));
+
+    out.push_str("# HELP livepeer_bot_reward_watch_digests_total Delinquency digests posted since process start\n");
+    out.push_str("# TYPE livepeer_bot_reward_watch_digests_total counter\n");
+    out.push_str(&format!(
+        "livepeer_bot_reward_watch_digests_total {}\n",
+        metrics.reward_watch_digests_total.load(Ordering::Relaxed)
+    ));
 
     out
 }

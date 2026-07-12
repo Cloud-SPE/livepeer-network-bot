@@ -9,8 +9,9 @@ const MAX_GET_ATTEMPTS: u32 = 3;
 
 use super::types::{
     Cadence, EventListResponse, EventRow, GatewayProfileRow, OrchDelegatorsResponse,
-    OrchestratorProfileRow, PayoutLeaderboardResponse, PayoutSummaryResponse,
-    RewardLeaderboardResponse, TranscoderParamsHistoryResponse,
+    OrchestratorListResponse, OrchestratorProfileRow, PayoutLeaderboardResponse,
+    PayoutSummaryResponse, RewardLeaderboardResponse, RoundEventsResponse, RoundIndexRow,
+    RoundsIndexResponse, TranscoderParamsHistoryResponse,
 };
 
 #[derive(Clone, Debug)]
@@ -211,6 +212,58 @@ impl ExplorerClient {
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("limit", &limit.to_string());
+            if let Some(c) = cursor {
+                q.append_pair("cursor", c);
+            }
+        }
+        self.get_json(url).await
+    }
+
+    /// Most recent protocol round (the `/rounds` index is newest-first).
+    /// `None` only if the explorer returns an empty index.
+    pub async fn latest_round(&self) -> anyhow::Result<Option<RoundIndexRow>> {
+        let mut url = self.url("api/v1/rounds")?;
+        url.query_pairs_mut().append_pair("limit", "1");
+        let resp: RoundsIndexResponse = self.get_json(url).await?;
+        Ok(resp.data.into_iter().next())
+    }
+
+    /// Events within one round, filtered to `kinds` (comma-separated event
+    /// names). `meta.to_block` is `None` while the round is still open and set
+    /// once the explorer has indexed the following round's start.
+    pub async fn round_events(
+        &self,
+        round: i64,
+        kinds: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> anyhow::Result<RoundEventsResponse> {
+        let mut url = self.url(&format!("api/v1/rounds/{round}/events"))?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("kinds", kinds);
+            q.append_pair("limit", &limit.to_string());
+            if let Some(c) = cursor {
+                q.append_pair("cursor", c);
+            }
+        }
+        self.get_json(url).await
+    }
+
+    /// Orchestrator profiles, optionally restricted to the current active set.
+    pub async fn list_orchestrators(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+        active_only: bool,
+    ) -> anyhow::Result<OrchestratorListResponse> {
+        let mut url = self.url("api/v1/orchestrators")?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("limit", &limit.to_string());
+            if active_only {
+                q.append_pair("active_only", "true");
+            }
             if let Some(c) = cursor {
                 q.append_pair("cursor", c);
             }

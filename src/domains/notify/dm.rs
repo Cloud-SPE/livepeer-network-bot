@@ -9,6 +9,7 @@ use poise::serenity_prelude::{Colour, CreateEmbed, CreateMessage, Timestamp};
 
 use crate::domains::{
     explorer::types::OrchestratorProfileRow,
+    scheduler::reward_watch_poller::RoundProgress,
     state::event_streams::{CutChangeEventRow, DelegatorEventRow, RewardEventRow},
 };
 
@@ -89,6 +90,94 @@ pub fn build_cut_change_dm(
     }
 
     CreateMessage::new().embed(embed)
+}
+
+/// Reward-call warning DM — one ladder rung from the reward watch poller.
+pub fn build_reward_watch_dm(
+    orch: &OrchestratorProfileRow,
+    orch_addr: &str,
+    round: i64,
+    progress: &RoundProgress,
+) -> CreateMessage {
+    let orch_name = orch
+        .display_name
+        .clone()
+        .unwrap_or_else(|| orch_addr.to_string());
+
+    let description = format!(
+        "[**{}**](https://tools.livepeer.cloud/orchestrator/{}) has **not called reward** \
+         for round **{}** yet.\n\n\
+         Round progress: block ~**{} of {}** ({:.0}% complete)\n\
+         Time left to call reward: **~{}**\n\n\
+         If no reward call lands before the round ends, delegators earn no \
+         inflation rewards from this orchestrator for the round.",
+        orch_name,
+        orch_addr,
+        round,
+        progress.est_block,
+        progress.round_length_blocks,
+        progress.elapsed_pct,
+        format_duration_coarse(progress.remaining),
+    );
+
+    let mut embed = CreateEmbed::new()
+        .title("Reward call pending")
+        .description(description)
+        .colour(Colour::from_rgb(0xe6, 0x7e, 0x22))
+        .timestamp(Timestamp::now())
+        .footer(poise::serenity_prelude::CreateEmbedFooter::new(
+            "Reward-call status lags chain finality by up to ~25 minutes.",
+        ));
+
+    if let Some(thumb) = orch.avatar_url.as_deref() {
+        embed = embed.thumbnail(thumb);
+    }
+
+    CreateMessage::new().embed(embed)
+}
+
+/// Final "missed reward" DM — sent once per (round, orchestrator) after the
+/// round has closed without a reward call.
+pub fn build_reward_missed_dm(
+    orch: &OrchestratorProfileRow,
+    orch_addr: &str,
+    round: i64,
+) -> CreateMessage {
+    let orch_name = orch
+        .display_name
+        .clone()
+        .unwrap_or_else(|| orch_addr.to_string());
+
+    let description = format!(
+        "[**{}**](https://tools.livepeer.cloud/orchestrator/{}) **did not call reward** \
+         during round **{}**.\n\n\
+         Delegators earned no inflation rewards from this orchestrator for that \
+         round. The reward call for the new round is still available.",
+        orch_name, orch_addr, round,
+    );
+
+    let mut embed = CreateEmbed::new()
+        .title("Reward call missed")
+        .description(description)
+        .colour(Colour::from_rgb(0xcc, 0x33, 0x33))
+        .timestamp(Timestamp::now());
+
+    if let Some(thumb) = orch.avatar_url.as_deref() {
+        embed = embed.thumbnail(thumb);
+    }
+
+    CreateMessage::new().embed(embed)
+}
+
+/// Coarse human duration for warning copy: "3h 25m" / "48m".
+fn format_duration_coarse(d: std::time::Duration) -> String {
+    let mins = d.as_secs() / 60;
+    let (h, m) = (mins / 60, mins % 60);
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
+    }
 }
 
 /// One bucket of the delegator digest. Bonds get pre-classified by the
