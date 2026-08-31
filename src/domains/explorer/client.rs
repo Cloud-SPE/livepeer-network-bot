@@ -61,6 +61,28 @@ impl ExplorerClient {
     /// exponential backoff. Non-retryable 4xx and JSON-decode errors surface
     /// immediately.
     async fn get_json<T: serde::de::DeserializeOwned>(&self, url: Url) -> anyhow::Result<T> {
+        let resp = self.get_with_retries(url).await?.error_for_status()?;
+        Ok(resp.json().await?)
+    }
+
+    /// Like [`get_json`](Self::get_json), but maps a 404 to `Ok(None)` so
+    /// callers can treat a missing resource (e.g. an orchestrator the
+    /// explorer hasn't indexed yet) as data rather than a failure.
+    async fn get_json_optional<T: serde::de::DeserializeOwned>(
+        &self,
+        url: Url,
+    ) -> anyhow::Result<Option<T>> {
+        let resp = self.get_with_retries(url).await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = resp.error_for_status()?;
+        Ok(Some(resp.json().await?))
+    }
+
+    /// GET with the retry policy; returns the final response without
+    /// checking its status.
+    async fn get_with_retries(&self, url: Url) -> anyhow::Result<reqwest::Response> {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
@@ -76,8 +98,7 @@ impl ExplorerClient {
                         continue;
                     }
                     // Non-retryable status, or out of attempts: surface it.
-                    let resp = resp.error_for_status()?;
-                    return Ok(resp.json().await?);
+                    return Ok(resp);
                 }
                 Err(err)
                     if attempt < MAX_GET_ATTEMPTS
@@ -146,11 +167,42 @@ impl ExplorerClient {
         Ok(row)
     }
 
+    /// Orchestrator profile, with a 404 (address unknown to the explorer)
+    /// surfaced as `Ok(None)` instead of an error.
+    pub async fn try_get_orchestrator(
+        &self,
+        address: &str,
+    ) -> anyhow::Result<Option<OrchestratorProfileRow>> {
+        let url = self.url(&format!("api/v1/orchestrators/{address}"))?;
+        let Some(mut row) = self
+            .get_json_optional::<OrchestratorProfileRow>(url)
+            .await?
+        else {
+            return Ok(None);
+        };
+        row.avatar_url = absolutize_avatar(&self.base_url, row.avatar_url.take());
+        Ok(Some(row))
+    }
+
     pub async fn get_gateway(&self, address: &str) -> anyhow::Result<GatewayProfileRow> {
         let url = self.url(&format!("api/v1/gateways/{address}/profile"))?;
         let mut row: GatewayProfileRow = self.get_json(url).await?;
         row.avatar_url = absolutize_avatar(&self.base_url, row.avatar_url.take());
         Ok(row)
+    }
+
+    /// Gateway profile, with a 404 (address unknown to the explorer)
+    /// surfaced as `Ok(None)` instead of an error.
+    pub async fn try_get_gateway(
+        &self,
+        address: &str,
+    ) -> anyhow::Result<Option<GatewayProfileRow>> {
+        let url = self.url(&format!("api/v1/gateways/{address}/profile"))?;
+        let Some(mut row) = self.get_json_optional::<GatewayProfileRow>(url).await? else {
+            return Ok(None);
+        };
+        row.avatar_url = absolutize_avatar(&self.base_url, row.avatar_url.take());
+        Ok(Some(row))
     }
 
     pub async fn payout_summary(

@@ -59,14 +59,37 @@ async fn run_once<N: Notifier>(
     for (orch_addr, mut tickets) in by_orch {
         tickets.sort_by_key(|t| t.block_timestamp);
 
-        let orch = explorer.get_orchestrator(&orch_addr).await?;
+        // A profile the explorer hasn't indexed yet (tickets can reference
+        // orchestrators/gateways before the upstream orchestrator table
+        // catches up) must not wedge the whole digest pipeline: one 404 used
+        // to abort every group and permanently block all payout posts. Post
+        // with a bare-address fallback profile instead.
+        let orch = match explorer.try_get_orchestrator(&orch_addr).await? {
+            Some(orch) => orch,
+            None => {
+                tracing::warn!(
+                    orch = %orch_addr,
+                    "orchestrator profile missing from explorer (404); posting with bare-address fallback"
+                );
+                fallback_orchestrator_profile(&orch_addr)
+            }
+        };
         let fee_cut = parse_fee_cut(&orch);
 
         let mut gateways: HashMap<String, GatewayProfileRow> = HashMap::new();
         for t in &tickets {
             if let Some(addr) = t.from_address.as_deref() {
                 if !gateways.contains_key(addr) {
-                    let gw = explorer.get_gateway(addr).await?;
+                    let gw = match explorer.try_get_gateway(addr).await? {
+                        Some(gw) => gw,
+                        None => {
+                            tracing::warn!(
+                                gateway = %addr,
+                                "gateway profile missing from explorer (404); posting with bare-address fallback"
+                            );
+                            fallback_gateway_profile(addr)
+                        }
+                    };
                     gateways.insert(addr.to_string(), gw);
                 }
             }
@@ -149,6 +172,43 @@ async fn run_once<N: Notifier>(
     }
 
     Ok(())
+}
+
+/// Minimal profile for an orchestrator the explorer doesn't know: the embed
+/// falls back to the raw address for the name and omits the thumbnail, and a
+/// zero fee cut matches `parse_fee_cut`'s behavior for unparseable values.
+fn fallback_orchestrator_profile(address: &str) -> OrchestratorProfileRow {
+    OrchestratorProfileRow {
+        address: address.to_string(),
+        total_stake: "0".to_string(),
+        fee_cut_percent: "0".to_string(),
+        fee_share_percent: "0".to_string(),
+        reward_cut_percent: "0".to_string(),
+        is_active: false,
+        as_of_block: "0".to_string(),
+        as_of_round: None,
+        display_name: None,
+        avatar_url: None,
+        service_uri: None,
+        last_lifecycle_event_at: None,
+    }
+}
+
+/// Minimal profile for a gateway the explorer doesn't know. `kind` defaults
+/// to transcoding, so such tickets group into the non-AI digest.
+fn fallback_gateway_profile(address: &str) -> GatewayProfileRow {
+    GatewayProfileRow {
+        address: address.to_string(),
+        display_name: None,
+        avatar_url: None,
+        kind: "transcoding".to_string(),
+        latest_deposit: "0".to_string(),
+        latest_reserve: "0".to_string(),
+        reserve_claimed_in_current_round: "0".to_string(),
+        withdraw_round: "0".to_string(),
+        unlock_in_progress: false,
+        as_of_block: "0".to_string(),
+    }
 }
 
 fn parse_fee_cut(orch: &OrchestratorProfileRow) -> f64 {
@@ -494,6 +554,103 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn missing_profiles_fall_back_instead_of_blocking_the_run() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        let state = SqliteStateRepo::new(pool.clone());
+
+        for (id, tx, ts, from, to) in [
+            (
+                "e1",
+                "0xtx1",
+                ts(2026, 5, 15, 10, 0, 0),
+                "0xgw-tx",
+                "0xorch-a",
+            ),
+            (
+                "e2",
+                "0xtx2",
+                ts(2026, 5, 15, 10, 5, 0),
+                "0xgw-tx",
+                "0xorch-missing",
+            ),
+            (
+                "e3",
+                "0xtx3",
+                ts(2026, 5, 15, 10, 6, 0),
+                "0xgw-missing",
+                "0xorch-a",
+            ),
+        ] {
+            sqlx::query(
+                r#"
+                INSERT INTO events (
+                    id, chain_id, tx_hash, log_index, block_number, block_timestamp,
+                    contract_address, contract_name, event_name, event_signature,
+                    asset, amount_native, amount_usd, native_usd_price,
+                    from_address, to_address, finality, is_canonical, fetched_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?
+                )
+                "#,
+            )
+            .bind(id)
+            .bind("42161")
+            .bind(tx)
+            .bind(0_i64)
+            .bind("1")
+            .bind(ts)
+            .bind("0xcontract")
+            .bind("TicketBroker")
+            .bind("WinningTicketRedeemed")
+            .bind("0xsig")
+            .bind("ETH")
+            .bind("0.1")
+            .bind(Some("300.0"))
+            .bind(Some("3000.0"))
+            .bind(Some(from))
+            .bind(Some(to))
+            .bind("finalized")
+            .bind(1_i64)
+            .bind(ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let server = TestExplorerServer::start();
+        let explorer = ExplorerClient::new(Client::new(), server.base_url());
+        let notifier = RecordingNotifier::new();
+
+        run_once(&explorer, &notifier, &state, 500).await.unwrap();
+
+        // One digest for 0xorch-a (both its tickets are transcoding — the
+        // missing gateway falls back to transcoding) plus one single-ticket
+        // message for the unknown orchestrator.
+        let payloads = notifier.payloads();
+        assert_eq!(payloads.len(), 2);
+        let descriptions: Vec<&str> = payloads
+            .iter()
+            .map(|p| p["embeds"][0]["description"].as_str().unwrap())
+            .collect();
+        assert!(descriptions.iter().any(|d| d.contains("0xorch-missing")));
+
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE sent_to_discord = 0")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
     #[test]
     fn aligns_to_next_wall_clock_boundary() {
         let now = Utc.with_ymd_and_hms(2026, 5, 15, 14, 7, 12).unwrap();
@@ -616,7 +773,13 @@ mod tests {
                     let mut buf = [0_u8; 4096];
                     let n = stream.read(&mut buf).unwrap();
                     let request = String::from_utf8_lossy(&buf[..n]);
-                    let body = if request.starts_with(
+                    let mut status_line = "HTTP/1.1 200 OK";
+                    let body = if request.starts_with("GET /api/v1/orchestrators/0xorch-missing ")
+                        || request.starts_with("GET /api/v1/gateways/0xgw-missing/profile ")
+                    {
+                        status_line = "HTTP/1.1 404 Not Found";
+                        r#"{"error":"not found"}"#
+                    } else if request.starts_with(
                         "GET /api/v1/events?event_name=WinningTicketRedeemed&tx_hash=0xtx1&with_valuations=true&limit=10 ",
                     ) {
                         r#"{"data":[{"id":"ticket-1","chain_id":"42161","tx_hash":"0xtx1","log_index":0,"block_number":"1","block_hash":"0xblock","block_timestamp":"2026-05-15T12:30:00Z","contract_address":"0xcontract","contract_name":"TicketBroker","event_name":"WinningTicketRedeemed","event_signature":"0xsig","asset":"ETH","amount_native":"0.5","is_valuable":true,"from_address":"0xgateway","to_address":"0xorch","finality":"finalized","is_canonical":true,"valuations":[{"asset":"ETH","valuation_version":"v1","amount_native":"0.5","native_usd_price":"3000.0","amount_usd":"1500.0","source":"test","pricing_method":"test","status":"priced"}]}],"next_cursor":null}"#
@@ -636,7 +799,8 @@ mod tests {
                         panic!("unexpected request: {request}");
                     };
                     let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status_line,
                         body.len(),
                         body
                     );
